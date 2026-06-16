@@ -115,6 +115,7 @@ function appReducer(state,action){
     case 'UPDATE_SETTINGS':return Object.assign({},state,{settings:Object.assign({},state.settings,action.settings)});
     case 'ADD_SHARED_CATEGORY':if(state.settings.sharedCategories.indexOf(action.name)>=0)return state;return Object.assign({},state,{settings:Object.assign({},state.settings,{sharedCategories:state.settings.sharedCategories.concat([action.name])})});
     case 'REMOVE_SHARED_CATEGORY':return Object.assign({},state,{settings:Object.assign({},state.settings,{sharedCategories:state.settings.sharedCategories.filter(function(c){return c!==action.name;})})});
+    case 'RENAME_SHARED_CATEGORY':return Object.assign({},state,{settings:Object.assign({},state.settings,{sharedCategories:state.settings.sharedCategories.map(function(c){return c===action.oldName?action.newName:c;})})});
     case 'ADD_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:[action.expense].concat(state.sharedExpenses)});
     case 'SET_SHARED_DATA':return Object.assign({},state,{sharedExpenses:action.sharedExpenses,reimbursements:action.reimbursements});
     case 'SETTLE_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.map(function(e){return e.id===action.id?Object.assign({},e,{settled:true}):e;})});
@@ -2357,25 +2358,45 @@ function SettingsTab(){
   var rv=useState('');var renameVal=rv[0];var setRenameVal=rv[1];
 
   function saveName(){if(nameInput.trim())dispatch({type:'UPDATE_SETTINGS',settings:{userName:nameInput.trim()}});setEditName(false);}
-  function addExpCat(){if(newExpCat.trim()){dispatch({type:'ADD_EXPENSE_CATEGORY',name:newExpCat.trim()});setNewExpCat('');setShowAddExp(false);}}
-  function addIncCat(){if(newIncCat.trim()){dispatch({type:'ADD_INCOME_CATEGORY',name:newIncCat.trim()});setNewIncCat('');setShowAddInc(false);}}
-  function addShCat(){if(newShCat.trim()){dispatch({type:'ADD_SHARED_CATEGORY',name:newShCat.trim()});setNewShCat('');setShowAddSh(false);}}
+  function nextSortOrder(type){
+    var list=type==='expense'?state.settings.expenseCategories:type==='income'?state.settings.incomeCategories:state.settings.sharedCategories;
+    return (list?list.length:0)+1;
+  }
+  function addCatPersisted(type,name,actionType){
+    dispatch({type:actionType,name:name});
+    sbShared.from('categories').insert([{name:name,type:type,active:true,sort_order:nextSortOrder(type)}])
+      .then(function(r){if(r.error)logErr('add category err: '+r.error.message);else logOk('category added: '+name+' ('+type+')');});
+  }
+  function addExpCat(){if(newExpCat.trim()){addCatPersisted('expense',newExpCat.trim(),'ADD_EXPENSE_CATEGORY');setNewExpCat('');setShowAddExp(false);}}
+  function addIncCat(){if(newIncCat.trim()){addCatPersisted('income',newIncCat.trim(),'ADD_INCOME_CATEGORY');setNewIncCat('');setShowAddInc(false);}}
+  function addShCat(){if(newShCat.trim()){addCatPersisted('shared',newShCat.trim(),'ADD_SHARED_CATEGORY');setNewShCat('');setShowAddSh(false);}}
   function handleExport(){try{var blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'});var url=URL.createObjectURL(blob);var a=document.createElement('a');a.href=url;a.download='finanzas.json';a.click();URL.revokeObjectURL(url);}catch(e){alert('Exportación no disponible');}}
   function startRename(key,cat){setEditingCat({key:key,cat:cat});setRenameVal(cat);}
   function commitRename(){
     if(!editingCat)return;
     var nn=renameVal.trim();
     if(nn&&nn!==editingCat.cat){
-      var actionType=editingCat.key==='exp'?'RENAME_EXPENSE_CATEGORY':'RENAME_INCOME_CATEGORY';
-      dispatch({type:actionType,oldName:editingCat.cat,newName:nn});
-      // Supabase: update monthly_data category name
-      sb.from('monthly_data').update({category:nn}).eq('category',editingCat.cat).eq('type',editingCat.key==='exp'?'expense':'income')
-        .then(function(r){if(r.error)logErr('rename cat error: '+r.error.message);else logOk('renamed cat: '+editingCat.cat+' → '+nn);});
+      var typeMap={exp:'expense',inc:'income',sh:'shared'};
+      var actionMap={exp:'RENAME_EXPENSE_CATEGORY',inc:'RENAME_INCOME_CATEGORY',sh:'RENAME_SHARED_CATEGORY'};
+      var dbType=typeMap[editingCat.key];
+      dispatch({type:actionMap[editingCat.key],oldName:editingCat.cat,newName:nn});
+      sbShared.from('categories').update({name:nn}).eq('name',editingCat.cat).eq('type',dbType)
+        .then(function(r){if(r.error)logErr('rename category err: '+r.error.message);else logOk('category renamed: '+editingCat.cat+' → '+nn);});
+      if(dbType==='expense'||dbType==='income'){
+        sb.from('monthly_data').update({category:nn}).eq('category',editingCat.cat).eq('type',dbType)
+          .then(function(r){if(r.error)logErr('rename monthly_data err: '+r.error.message);else logOk('monthly_data renamed: '+editingCat.cat+' → '+nn);});
+      }
     }
     setEditingCat(null);setRenameVal('');
   }
-  function catRow(cat,dotColor,key,dispatchRemoveType){
+  function removeCatPersisted(type,name,actionType){
+    dispatch({type:actionType,name:name});
+    sbShared.from('categories').update({active:false}).eq('name',name).eq('type',type)
+      .then(function(r){if(r.error)logErr('deactivate category err: '+r.error.message);else logOk('category deactivated: '+name);});
+  }
+  function catRow(cat,dotColor,key,dispatchRemoveType,dbType){
     var isEditing=editingCat&&editingCat.key===key&&editingCat.cat===cat;
+    var canManage=ME==='pablo'; // Aza solo puede añadir categorías, no editar/borrar
     return h('div',{key:cat,style:{display:'flex',alignItems:'center',gap:8,padding:'7px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
       h('div',{style:{width:7,height:7,borderRadius:'50%',background:dotColor,flexShrink:0}}),
       isEditing?h('input',{autoFocus:true,value:renameVal,onChange:function(e){setRenameVal(e.target.value);},
@@ -2383,8 +2404,12 @@ function SettingsTab(){
         onBlur:commitRename,
         style:{flex:1,background:'rgba(255,255,255,0.08)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:8,color:'#EEF2FF',fontSize:13,padding:'4px 9px',outline:'none'}}):
       h('span',{style:{flex:1,fontSize:13,color:'rgba(238,242,255,0.72)'}},cat),
+      !canManage?null:
       isEditing?h('button',{onClick:commitRename,style:{background:'none',border:'none',color:'#3DD68C',fontSize:14,padding:'2px 6px',cursor:'pointer'}},'✓'):
-        h('button',{onClick:function(){startRename(key,cat);},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 5px',cursor:'pointer'}},'✏️')
+        h('div',{style:{display:'flex',gap:2}},
+          h('button',{onClick:function(){startRename(key,cat);},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 5px',cursor:'pointer'}},'✏️'),
+          h('button',{onClick:function(){if(window.confirm('¿Desactivar categoría "'+cat+'"? El histórico se conserva en Supabase.'))removeCatPersisted(dbType,cat,dispatchRemoveType);},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:13,padding:'2px 5px',cursor:'pointer'}},'✕')
+        )
     );
   }
 
@@ -2410,7 +2435,7 @@ function SettingsTab(){
         h('div',{style:{fontSize:14,color:'rgba(238,242,255,0.4)',transform:openExp?'rotate(180deg)':'none',transition:'transform 0.2s'}},'▾')
       ),
       openExp?h('div',null,
-        settings.expenseCategories.map(function(cat){return catRow(cat,'#3DD68C','exp','REMOVE_EXPENSE_CATEGORY');}),
+        settings.expenseCategories.map(function(cat){return catRow(cat,'#3DD68C','exp','REMOVE_EXPENSE_CATEGORY','expense');}),
         showAddExp?h('div',{style:{display:'flex',gap:8,marginTop:8}},h('input',{placeholder:'Nueva categoría',value:newExpCat,onChange:function(e){setNewExpCat(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')addExpCat();},autoFocus:true,style:ai}),h('button',{onClick:addExpCat,style:ac},'+')):h('button',{onClick:function(){setShowAddExp(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
       ):h('button',{onClick:function(){setShowAddExp(true);setOpenExp(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
     ),
@@ -2420,7 +2445,7 @@ function SettingsTab(){
         h('div',{style:{fontSize:14,color:'rgba(238,242,255,0.4)',transform:openInc?'rotate(180deg)':'none',transition:'transform 0.2s'}},'▾')
       ),
       openInc?h('div',null,
-        settings.incomeCategories.map(function(cat){return catRow(cat,'#4FACFE','inc','REMOVE_INCOME_CATEGORY');}),
+        settings.incomeCategories.map(function(cat){return catRow(cat,'#4FACFE','inc','REMOVE_INCOME_CATEGORY','income');}),
         showAddInc?h('div',{style:{display:'flex',gap:8,marginTop:8}},h('input',{placeholder:'Nueva categoría',value:newIncCat,onChange:function(e){setNewIncCat(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')addIncCat();},autoFocus:true,style:ai}),h('button',{onClick:addIncCat,style:ac},'+')):h('button',{onClick:function(){setShowAddInc(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
       ):h('button',{onClick:function(){setShowAddInc(true);setOpenInc(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
     ),
@@ -2464,7 +2489,7 @@ function SettingsTab(){
         h('div',{style:{fontSize:14,color:'rgba(238,242,255,0.4)',transform:openSh?'rotate(180deg)':'none',transition:'transform 0.2s'}},'▾')
       ),
       openSh?h('div',null,
-        state.settings.sharedCategories.map(function(cat){return h('div',{key:cat,style:crow},h('div',{style:{width:7,height:7,borderRadius:'50%',background:'#C084FC',flexShrink:0}}),h('span',{style:{flex:1,fontSize:13,color:'rgba(238,242,255,0.72)'}},cat),h('button',{onClick:function(){dispatch({type:'REMOVE_SHARED_CATEGORY',name:cat});},style:{background:'none',border:'none',color:'rgba(238,242,255,0.28)',fontSize:14,padding:'2px 6px',cursor:'pointer'}},'✕'));}),
+        state.settings.sharedCategories.map(function(cat){return catRow(cat,'#C084FC','sh','REMOVE_SHARED_CATEGORY','shared');}),
         showAddSh?h('div',{style:{display:'flex',gap:8,marginTop:8}},h('input',{placeholder:'Nueva categoría',value:newShCat,onChange:function(e){setNewShCat(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')addShCat();},autoFocus:true,style:ai}),h('button',{onClick:addShCat,style:ac},'+')):h('button',{onClick:function(){setShowAddSh(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
       ):h('button',{onClick:function(){setShowAddSh(true);setOpenSh(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
     ),
@@ -2487,7 +2512,7 @@ function SettingsTab(){
       ),
       h('button',{onClick:function(){_appLogs.length=0;},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:11,cursor:'pointer',marginTop:6}},'Limpiar log')
     ),
-    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.028 · '+MW.curMonthLabel),
+    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.029 · '+MW.curMonthLabel),
     h('div',{style:{height:16}})
   );
 }
@@ -2683,7 +2708,7 @@ function SharedAddForm(props){
 function SharedTab(){
   var ctx=useApp();var state=ctx.state;var dispatch=ctx.dispatch;
   var PC='#C084FC';
-  var cats=state.settings.expenseCategories||['Supermercado','Gasolina','Restaurantes','Casa','Otros'];
+  var cats=state.settings.sharedCategories||['Supermercado','Restaurante','Hogar','Ocio','Viajes','Otros'];
   var allExp=state.sharedExpenses||[];
   var reimbs=state.reimbursements||[];
 
@@ -3112,8 +3137,8 @@ window.addEventListener('error', function(e) {
 var SUPABASE_URL = 'https://ryiezfoxmeweadkvusii.supabase.co';
 var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5aWV6Zm94bWV3ZWFka3Z1c2lpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MjM0OTQsImV4cCI6MjA5NzE5OTQ5NH0.BjI9C9rSVTfEb5vyMuiZmc8TQ_yqvwErE7MyFxy-vXE';
 
-// ─── SUPABASE COMPARTIDO (Tricount) ───────────────────────────────────────────
-// shared_expenses y reimbursements viven SIEMPRE en el Supabase de Pablo,
+// ─── SUPABASE COMPARTIDO (Tricount + categorías) ──────────────────────────────
+// shared_expenses, reimbursements y categories viven SIEMPRE en el Supabase de Pablo,
 // para que ambos builds (Pablo y Aza) lean/escriban la misma tabla.
 // NO TOCAR: debe apuntar siempre al proyecto de Pablo.
 var SHARED_SUPABASE_URL = 'https://togoemmiuddohttxqehb.supabase.co';
@@ -3128,9 +3153,13 @@ var sbShared = (SHARED_SUPABASE_URL===SUPABASE_URL)
 // ─── MAPEO DB → ESTADO APP ────────────────────────────────────────────────────
 // DB_MONTHS defined dynamically via buildMonthWindow() above
 
-function buildStateFromDB(rows) {
+function buildStateFromDB(rows, expCatNames, incCatNames) {
   var expenses = {};
   var income = {};
+
+  // Aseguramos que TODAS las categorías activas existen, aunque no tengan filas en monthly_data todavía.
+  (expCatNames||[]).forEach(function(name){ expenses[name] = Array(WINDOW_SIZE).fill(0); });
+  (incCatNames||[]).forEach(function(name){ income[name] = Array(WINDOW_SIZE).fill(0); });
 
   rows.forEach(function(row) {
     if (row.type === 'expense') {
@@ -3212,12 +3241,23 @@ function AppWithData() {
       sb.from('pending_balances').select('*'),
       sb.from('fund_contributions').select('*'),
       sbShared.from('shared_expenses').select('*'),
-      sbShared.from('reimbursements').select('*')
+      sbShared.from('reimbursements').select('*'),
+      sbShared.from('categories').select('*').eq('active',true).order('sort_order')
     ]).then(function(results) {
-      var mdRes=results[0],accRes=results[1],histRes=results[2],ratesRes=results[3],pbRes=results[4],fcRes=results[5],seRes=results[6],reRes=results[7];
+      var mdRes=results[0],accRes=results[1],histRes=results[2],ratesRes=results[3],pbRes=results[4],fcRes=results[5],seRes=results[6],reRes=results[7],catRes=results[8];
       if(mdRes.error) throw new Error(mdRes.error.message);
       var rows=mdRes.data||[];
-      var parsed=buildStateFromDB(rows);
+      // Categorías: SIEMPRE desde la tabla 'categories' de Pablo (sbShared), fuente única de verdad.
+      var catRows=catRes.error?[]:(catRes.data||[]);
+      if(catRes.error)logErr('categories load err: '+catRes.error.message);
+      var expCatNames=catRows.filter(function(c){return c.type==='expense';}).map(function(c){return c.name;});
+      var incCatNames=catRows.filter(function(c){return c.type==='income';}).map(function(c){return c.name;});
+      var shCatNames=catRows.filter(function(c){return c.type==='shared';}).map(function(c){return c.name;});
+      var parsed=buildStateFromDB(rows,expCatNames,incCatNames);
+      logOk('Categories: '+expCatNames.length+' gasto, '+incCatNames.length+' ingreso, '+shCatNames.length+' compartido');
+      parsed.expenseCategories=expCatNames;
+      parsed.incomeCategories=incCatNames;
+      parsed.sharedCategories=shCatNames;
       // Build accounts
       var accs=(accRes.data||[]).map(function(a){
         var hist=(histRes.data||[]).filter(function(h){return h.account_id===a.id;});
@@ -3289,8 +3329,9 @@ function AppWithData() {
     if(dbData.fundContributions)INITIAL_STATE.fundContributions=dbData.fundContributions;
     INITIAL_STATE.sharedExpenses = dbData.sharedExpenses||[];
     INITIAL_STATE.reimbursements = dbData.reimbursements||[];
-    INITIAL_STATE.settings.expenseCategories = Object.keys(dbData.expenses);
-    INITIAL_STATE.settings.incomeCategories = Object.keys(dbData.income);
+    INITIAL_STATE.settings.expenseCategories = dbData.expenseCategories||Object.keys(dbData.expenses);
+    INITIAL_STATE.settings.incomeCategories = dbData.incomeCategories||Object.keys(dbData.income);
+    INITIAL_STATE.settings.sharedCategories = dbData.sharedCategories||INITIAL_STATE.settings.sharedCategories;
     window._finergyDbLoaded = true;
     logOk('Datos cargados: '+Object.keys(dbData.expenses).length+' cats gasto, '+Object.keys(dbData.income).length+' cats ingreso, '+((dbData.accounts||[]).length)+' cuentas');
   } else {
