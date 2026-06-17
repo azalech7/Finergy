@@ -113,11 +113,11 @@ function appReducer(state,action){
     case 'DELETE_MOVEMENT':return Object.assign({},state,{movements:state.movements.filter(function(m){return m.id!==action.id;})});
     case 'UPDATE_SETTINGS':return Object.assign({},state,{settings:Object.assign({},state.settings,action.settings)});
     case 'ADD_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:[action.expense].concat(state.sharedExpenses)});
+    case 'SET_SHARED_EXPENSE_ID':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.map(function(e){return e.id===action.tempId?Object.assign({},e,{id:action.realId}):e;})});
     case 'SET_SHARED_DATA':return Object.assign({},state,{sharedExpenses:action.sharedExpenses,reimbursements:action.reimbursements});
-    case 'SETTLE_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.map(function(e){return e.id===action.id?Object.assign({},e,{settled:true}):e;})});
+    case 'SETTLE_MONTH':return Object.assign({},state,{reimbursements:state.reimbursements.map(function(r){return r.month===action.month?Object.assign({},r,{settled:true}):r;})});
     case 'DELETE_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.filter(function(e){return e.id!==action.id;})});
     case 'ADD_REIMBURSEMENT':return Object.assign({},state,{reimbursements:[action.reimbursement].concat(state.reimbursements)});
-    case 'SETTLE_MONTH':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.map(function(e){return e.month===action.month?Object.assign({},e,{settled:true}):e;}),reimbursements:state.reimbursements.map(function(r){return r.month===action.month?Object.assign({},r,{settled:true}):r;})});
     case 'SET_GLOBAL_MONTH':return Object.assign({},state,{globalMonthIdx:action.idx});
     case 'SET_PENDING_BALANCES':return Object.assign({},state,{pendingBalances:Object.assign({},state.pendingBalances,action.balances)});
     case 'ADD_CONTRIBUTION':return Object.assign({},state,{fundContributions:state.fundContributions.concat([action.contribution])});
@@ -1084,11 +1084,10 @@ function AnalysisContent(props){
     var isCurrentMonth=(DB_MONTHS[mi]===THIS_MONTH_S);
     if(isCurrentMonth){
       var pend=(pendBals.tricounts||0)+(pendBals.gastosEmpresa||0)+(pendBals.efectivo||0);
-      // también balance de gastos compartidos no liquidados del mes
-      var shBal=sharedExps.filter(function(e){return !e.settled&&e.month===THIS_MONTH_S;}).reduce(function(s,e){
-        var pct=(e.split&&e.split.type==='pct'?e.split.pablo:50)/100;
-        var myShare=e.split&&e.split.type==='fixed'?(e.split.pablo||0):e.amount*pct;
-        return s+(e.paidBy==='pablo'?(e.amount-myShare):(-myShare));
+      // también balance de gastos compartidos del mes
+      var shBal=sharedExps.filter(function(e){return e.month===THIS_MONTH_S;}).reduce(function(s,e){
+        var sh=calcShares(e);
+        return s+(e.paidBy==='pablo'?(e.amount-sh.pablo):(-sh.pablo));
       },0);
       delta+=pend+shBal;
     }
@@ -2492,7 +2491,7 @@ function SettingsTab(){
       ),
       h('button',{onClick:function(){_appLogs.length=0;},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:11,cursor:'pointer',marginTop:6}},'Limpiar log')
     ),
-    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.030 · '+MW.curMonthLabel),
+    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.031 · '+MW.curMonthLabel),
     h('div',{style:{height:16}})
   );
 }
@@ -2500,15 +2499,17 @@ function SettingsTab(){
 // ─── ICONS ────────────────────────────────────────────────────────────────────
 
 // ─── SHARED EXPENSES TAB ──────────────────────────────────────────────────────
+// 'myShareAmount' es siempre la parte de Pablo (independiente de quién pagó).
+// La parte de Aza es el resto del total.
 function calcShares(e){
-  var s=e.split,t=e.amount,p,el;
-  if(s.type==='fixed'){p=s.pablo||0;el=s.ella||0;}
-  else{var pct=(s.pablo||50)/100;p=Math.round(t*pct*100)/100;el=Math.round((t-p)*100)/100;}
+  var t=e.amount;
+  var p=Math.round((e.myShareAmount||0)*100)/100;
+  var el=Math.round((t-p)*100)/100;
   return{pablo:p,ella:el};
 }
 function calcBalance(exps,reimbs,uid){
   var oth=uid==='pablo'?'ella':'pablo',bal=0;
-  exps.filter(function(e){return !e.settled;}).forEach(function(e){
+  exps.forEach(function(e){
     var sh=calcShares(e);
     if(e.paidBy===uid)bal+=sh[oth];else bal-=sh[uid];
   });
@@ -2573,21 +2574,28 @@ function SharedAddForm(props){
   var total=parseFloat(form.amount)||0;
   function handleSubmit(){
     if(!form.amount||!form.description)return;
-    var split;
-    if(form.splitType==='pct')split={type:'pct',pablo:form.pabloPct,ella:form.ellaPct};
-    else if(form.splitType==='fixed')split={type:'fixed',pablo:parseFloat(form.pabloFixed)||0,ella:parseFloat(form.ellaFixed)||0};
-    else split={type:'pct',pablo:100,ella:0};
+    var amt=parseFloat(form.amount);
+    var pabloShare;
+    if(form.splitType==='pct')pabloShare=Math.round(amt*(form.pabloPct/100)*100)/100;
+    else if(form.splitType==='fixed')pabloShare=parseFloat(form.pabloFixed)||0;
+    else pabloShare=form.pabloPct===100?amt:0;
+    var month=form.date.slice(0,7);
     var newExpense={
-      id:'se'+Date.now(),paidBy:form.paidBy,date:form.date,
+      id:'se'+Date.now(),paidBy:form.paidBy,
       category:form.category,description:form.description,
-      amount:parseFloat(form.amount),split:split,settled:false,month:form.date.slice(0,7)
+      amount:amt,myShareAmount:pabloShare,splitType:form.splitType,month:month
     };
     dispatch({type:'ADD_SHARED_EXPENSE',expense:newExpense});
     sbShared.from('shared_expenses').insert([{
-      id:newExpense.id,paid_by:newExpense.paidBy,date:newExpense.date,month:newExpense.month,
-      category:newExpense.category,description:newExpense.description,amount:newExpense.amount,
-      split_type:split.type,split_pablo:split.pablo||0,split_ella:split.ella||0,settled:false
-    }]).then(function(r){if(r.error)logErr('shared_expense save err: '+r.error.message);else logOk('shared_expense saved: '+newExpense.id);});
+      month:newExpense.month,description:newExpense.description,category:newExpense.category,
+      total_amount:newExpense.amount,paid_by:newExpense.paidBy,
+      my_share_pct:amt>0?Math.round((pabloShare/amt)*10000)/100:0,
+      my_share_amount:pabloShare,split_type:newExpense.splitType
+    }]).select().then(function(r){
+      if(r.error){logErr('shared_expense save err: '+r.error.message);return;}
+      // El id real lo asigna Supabase (bigint autoincremental); actualizamos el estado local con el id definitivo.
+      if(r.data&&r.data[0]){dispatch({type:'SET_SHARED_EXPENSE_ID',tempId:newExpense.id,realId:r.data[0].id});logOk('shared_expense saved: '+r.data[0].id);}
+    });
     onClose();
   }
   var fi={background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#EEF2FF',fontSize:13,padding:'9px 12px',outline:'none',width:'100%'};
@@ -2700,7 +2708,6 @@ function SharedTab(){
   var sr=useState(false);var showReimb=sr[0];var setShowReimb=sr[1];
   var ra=useState('');var reimbAmt=ra[0];var setReimbAmt=ra[1];
   var rn=useState('');var reimbNote=rn[0];var setReimbNote=rn[1];
-  var ss=useState(false);var showSettled=ss[0];var setShowSettled=ss[1];
   var lm=useState('total');var lineMetric=lm[0];var setLineMetric=lm[1]; // 'total' | 'mine' | 'byPayer'
   var pm=useState('total');var pieMetric=pm[0];var setPieMetric=pm[1]; // 'total' | 'mine'
   var rf=useState(false);var refreshing=rf[0];var setRefreshing=rf[1];
@@ -2722,12 +2729,12 @@ function SharedTab(){
   var months=Array.from(new Set(allExp.map(function(e){return e.month;}))).sort().reverse();
   if(months.indexOf(THIS_MONTH_S)<0)months.unshift(THIS_MONTH_S);
 
-  var balance=calcBalance(allExp.filter(function(e){return !e.settled;}),reimbs.filter(function(r){return !r.settled;}),ME);
+  var balance=calcBalance(allExp,reimbs.filter(function(r){return !r.settled;}),ME);
   var iOwe=balance<0;var balAmt=Math.abs(balance);
 
   var displayExp=view==='pending'
-    ?allExp.filter(function(e){return !e.settled;})
-    :allExp.filter(function(e){return e.month===selMonth&&(showSettled||!e.settled);});
+    ?allExp
+    :allExp.filter(function(e){return e.month===selMonth;});
 
   var bd=calcCatBD(displayExp,ME);
   var catEntries=Object.entries(bd).sort(function(a,b){return b[1].myTotal-a[1].myTotal;});
@@ -2964,22 +2971,18 @@ function SharedTab(){
     // Expense list
     h('div',{style:CARD},
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
-        h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF'}},view==='pending'?'Pendientes':'Gastos del mes'),
-        view==='historial'?h('div',{style:{display:'flex',gap:8}},
-          h('button',{onClick:function(){setShowSettled(!showSettled);},style:{background:'none',border:'none',color:'rgba(238,242,255,0.4)',fontSize:11,cursor:'pointer'}},showSettled?'Ocultar saldados':'Ver saldados'),
-          h('button',{onClick:function(){
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF'}},view==='pending'?'Todos los gastos':'Gastos del mes'),
+        view==='historial'?h('button',{onClick:function(){
             dispatch({type:'SETTLE_MONTH',month:selMonth});
-            sbShared.from('shared_expenses').update({settled:true}).eq('month',selMonth).then(function(r){if(r.error)logErr('settle month expenses err: '+r.error.message);});
             sbShared.from('reimbursements').update({settled:true}).eq('month',selMonth).then(function(r){if(r.error)logErr('settle month reimb err: '+r.error.message);});
-          },style:{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:8,color:'rgba(238,242,255,0.55)',fontSize:11,fontWeight:600,padding:'5px 10px',cursor:'pointer'}},'Saldar mes')
-        ):null
+          },style:{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:8,color:'rgba(238,242,255,0.55)',fontSize:11,fontWeight:600,padding:'5px 10px',cursor:'pointer'}},'Saldar reembolsos del mes'):null
       ),
       displayExp.length===0?h('div',{style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'20px 0'}},'Sin gastos'):null,
-      displayExp.sort(function(a,b){return b.date.localeCompare(a.date);}).map(function(expense){
+      displayExp.sort(function(a,b){return b.month.localeCompare(a.month);}).map(function(expense){
         var sh=calcShares(expense);var myShare=sh[ME];
         var iPaid=expense.paidBy===ME;var iGetBack=iPaid&&sh.ella>0;var iOweThis=!iPaid&&myShare>0;
         var payerUser=SHARED_USERS[expense.paidBy];
-        return h('div',{key:expense.id,style:{display:'flex',gap:10,padding:'11px 0',borderBottom:'1px solid rgba(255,255,255,0.05)',opacity:expense.settled?0.45:1}},
+        return h('div',{key:expense.id,style:{display:'flex',gap:10,padding:'11px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
           h('div',{style:{width:40,height:40,borderRadius:11,background:payerUser.color+'20',display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0}},
             SHARED_CAT_ICONS[expense.category]||'📦'
           ),
@@ -2987,7 +2990,7 @@ function SharedTab(){
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
               h('div',{style:{minWidth:0}},
                 h('div',{style:{fontSize:13,fontWeight:600,color:'#EEF2FF',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},expense.description),
-                h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:2}},expense.category+' \u00b7 '+expense.date.slice(5))
+                h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:2}},expense.category+' \u00b7 '+expense.month)
               ),
               h('div',{style:{textAlign:'right',flexShrink:0,marginLeft:8}},
                 h('div',{style:{fontSize:14,fontWeight:700,color:'#EEF2FF'}},fmt(expense.amount)),
@@ -2999,10 +3002,8 @@ function SharedTab(){
             h('div',{style:{display:'flex',alignItems:'center',gap:5,marginTop:5}},
               h('div',{style:{background:payerUser.color+'18',borderRadius:5,padding:'2px 6px',fontSize:10,color:payerUser.color,fontWeight:600}},'Pag\u00f3 '+payerUser.name),
               h('div',{style:{background:'rgba(255,255,255,0.05)',borderRadius:5,padding:'2px 6px',fontSize:10,color:'rgba(238,242,255,0.4)'}},
-                expense.split.type==='pct'?expense.split.pablo+'%/'+expense.split.ella+'%':
-                expense.split.type==='fixed'?fmt(expense.split.pablo||0)+'/'+fmt(expense.split.ella||0):'Solo uno'
+                'Pablo '+fmt(sh.pablo)+' / Aza '+fmt(sh.ella)
               ),
-              expense.settled?h('div',{style:{background:'rgba(61,214,140,0.1)',borderRadius:5,padding:'2px 6px',fontSize:10,color:'#3DD68C'}},'\u2713 Saldado'):null,
               h('button',{onClick:function(){
                 if(!window.confirm('¿Borrar este gasto?'))return;
                 dispatch({type:'DELETE_SHARED_EXPENSE',id:expense.id});
@@ -3165,11 +3166,14 @@ function buildStateFromDB(rows, expCatNames, incCatNames) {
 }
 
 // ─── MAPEO FILAS DB → OBJETOS (módulo Compartido) ─────────────────────────────
+// Esquema real de shared_expenses: id, month, description, category, total_amount,
+// paid_by, my_share_pct, my_share_amount, split_type, created_at. Sin 'date' ni 'settled'.
 function mapSharedExpenseRow(r) {
-  return {id:r.id,paidBy:r.paid_by,date:r.date,category:r.category,description:r.description,
-    amount:parseFloat(r.amount)||0,
-    split:{type:r.split_type,pablo:parseFloat(r.split_pablo)||0,ella:parseFloat(r.split_ella)||0},
-    settled:!!r.settled,month:r.month};
+  return {id:r.id,paidBy:r.paid_by,category:r.category,description:r.description,
+    amount:parseFloat(r.total_amount)||0,
+    myShareAmount:parseFloat(r.my_share_amount)||0,
+    mySharePct:r.my_share_pct!=null?parseFloat(r.my_share_pct):null,
+    splitType:r.split_type,month:r.month};
 }
 function mapReimbursementRow(r) {
   return {id:r.id,from:r.from,to:r.to,amount:parseFloat(r.amount)||0,date:r.date,note:r.note||'',month:r.month,settled:!!r.settled};
