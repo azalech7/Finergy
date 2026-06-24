@@ -2491,7 +2491,7 @@ function SettingsTab(){
       ),
       h('button',{onClick:function(){_appLogs.length=0;},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:11,cursor:'pointer',marginTop:6}},'Limpiar log')
     ),
-    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.031 · '+MW.curMonthLabel),
+    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.032 · '+MW.curMonthLabel),
     h('div',{style:{height:16}})
   );
 }
@@ -2588,9 +2588,11 @@ function SharedAddForm(props){
     dispatch({type:'ADD_SHARED_EXPENSE',expense:newExpense});
     sbShared.from('shared_expenses').insert([{
       month:newExpense.month,description:newExpense.description,category:newExpense.category,
-      total_amount:newExpense.amount,paid_by:newExpense.paidBy,
+      total_amount:newExpense.amount,
+      paid_by:newExpense.paidBy==='pablo'?'me':'partner',
       my_share_pct:amt>0?Math.round((pabloShare/amt)*10000)/100:0,
-      my_share_amount:pabloShare,split_type:newExpense.splitType
+      my_share_amount:pabloShare,
+      split_type:newExpense.splitType==='pct'?'percentage':newExpense.splitType
     }]).select().then(function(r){
       if(r.error){logErr('shared_expense save err: '+r.error.message);return;}
       // El id real lo asigna Supabase (bigint autoincremental); actualizamos el estado local con el id definitivo.
@@ -2774,7 +2776,10 @@ function SharedTab(){
     };
     dispatch({type:'ADD_REIMBURSEMENT',reimbursement:newReimb});
     sbShared.from('reimbursements').insert([{
-      id:newReimb.id,"from":newReimb.from,"to":newReimb.to,amount:newReimb.amount,
+      id:newReimb.id,
+      "from":newReimb.from==='pablo'?'me':'partner',
+      "to":newReimb.to==='pablo'?'me':'partner',
+      amount:newReimb.amount,
       date:newReimb.date,month:newReimb.month,note:newReimb.note,settled:false
     }]).then(function(r){if(r.error)logErr('reimbursement save err: '+r.error.message);else logOk('reimbursement saved: '+newReimb.id);});
     setShowReimb(false);setReimbAmt('');setReimbNote('');
@@ -3116,14 +3121,14 @@ window.addEventListener('error', function(e) {
   logErr('JS Error: '+e.message+' line '+e.lineno);
 });
 
-// ─── SUPABASE CONFIG (proyecto PERSONAL de Aza) ───────────────────────────────
+// ─── SUPABASE CONFIG ──────────────────────────────────────────────────────────
 var SUPABASE_URL = 'https://ryiezfoxmeweadkvusii.supabase.co';
 var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJ5aWV6Zm94bWV3ZWFka3Z1c2lpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE2MjM0OTQsImV4cCI6MjA5NzE5OTQ5NH0.BjI9C9rSVTfEb5vyMuiZmc8TQ_yqvwErE7MyFxy-vXE';
 
-// ─── SUPABASE COMPARTIDO (Tricount + categorías) ──────────────────────────────
-// shared_expenses, reimbursements y categories viven SIEMPRE en el Supabase de Pablo,
+// ─── SUPABASE COMPARTIDO (Tricount) ───────────────────────────────────────────
+// shared_expenses y reimbursements viven SIEMPRE en el Supabase de Pablo,
 // para que ambos builds (Pablo y Aza) lean/escriban la misma tabla.
-// NO TOCAR: debe apuntar siempre al proyecto de Pablo.
+// En el build de Pablo, coincide con su propio proyecto.
 var SHARED_SUPABASE_URL = 'https://togoemmiuddohttxqehb.supabase.co';
 var SHARED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRvZ29lbW1pdWRkb2h0dHhxZWhiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA4NDc3NTUsImV4cCI6MjA5NjQyMzc1NX0.ZR0hqrybhgskTWaRdYv0v87zuP-boE1m9NuXxKJaXG0';
 
@@ -3167,16 +3172,21 @@ function buildStateFromDB(rows, expCatNames, incCatNames) {
 
 // ─── MAPEO FILAS DB → OBJETOS (módulo Compartido) ─────────────────────────────
 // Esquema real de shared_expenses: id, month, description, category, total_amount,
-// paid_by, my_share_pct, my_share_amount, split_type, created_at. Sin 'date' ni 'settled'.
+// paid_by ('me'|'partner'), my_share_pct, my_share_amount, split_type ('percentage'|'fixed'), created_at.
+// Sin 'date' ni 'settled'.
 function mapSharedExpenseRow(r) {
-  return {id:r.id,paidBy:r.paid_by,category:r.category,description:r.description,
+  var paidBy=r.paid_by==='me'?'pablo':'ella';
+  return {id:r.id,paidBy:paidBy,category:r.category,description:r.description,
     amount:parseFloat(r.total_amount)||0,
     myShareAmount:parseFloat(r.my_share_amount)||0,
     mySharePct:r.my_share_pct!=null?parseFloat(r.my_share_pct):null,
     splitType:r.split_type,month:r.month};
 }
 function mapReimbursementRow(r) {
-  return {id:r.id,from:r.from,to:r.to,amount:parseFloat(r.amount)||0,date:r.date,note:r.note||'',month:r.month,settled:!!r.settled};
+  return {id:r.id,
+    from:r.from==='me'?'pablo':'ella',
+    to:r.to==='me'?'pablo':'ella',
+    amount:parseFloat(r.amount)||0,date:r.date,note:r.note||'',month:r.month,settled:!!r.settled};
 }
 // Recarga shared_expenses + reimbursements desde sbShared. onDone(ok:boolean) opcional.
 function fetchSharedData(onDone) {
