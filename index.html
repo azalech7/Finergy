@@ -84,9 +84,11 @@ var INITIAL_STATE={
   globalMonthIdx:WINDOW_SIZE-1,
   pendingBalances:{tricounts:0,gastosEmpresa:0,efectivo:0},
   fundContributions:[],
+  categoryIcons:{},
   settings:{currency:'EUR',locale:'es-ES',
     expenseCategories:[],
     incomeCategories:[],
+    savingsGoalPct:25,
     userName:'Aza',theme:'dark'},
   sharedExpenses:[],
   reimbursements:[]
@@ -105,6 +107,7 @@ function appReducer(state,action){
     case 'ADD_INCOME_CATEGORY':if(state.settings.incomeCategories.indexOf(action.name)>=0)return state;return Object.assign({},state,{income:Object.assign({},state.income,(function(){var tmp={};tmp[action.name]=Array(WINDOW_SIZE).fill(0);return tmp;})()),settings:Object.assign({},state.settings,{incomeCategories:state.settings.incomeCategories.concat([action.name])})});
     case 'REMOVE_INCOME_CATEGORY':{var ic=Object.assign({},state.income);delete ic[action.name];return Object.assign({},state,{income:ic,settings:Object.assign({},state.settings,{incomeCategories:state.settings.incomeCategories.filter(function(c){return c!==action.name;})})});}
     case 'RENAME_INCOME_CATEGORY':{var ric=Object.assign({},state.income);ric[action.newName]=ric[action.oldName]||Array(WINDOW_SIZE).fill(0);delete ric[action.oldName];return Object.assign({},state,{income:ric,settings:Object.assign({},state.settings,{incomeCategories:state.settings.incomeCategories.map(function(c){return c===action.oldName?action.newName:c;})})});}
+    case 'SET_CATEGORY_ICON':{var ci=Object.assign({},state.categoryIcons);ci[action.name]=action.icon;return Object.assign({},state,{categoryIcons:ci});}
     case 'UPDATE_ACCOUNT':{
       var exists=state.accounts.some(function(a){return a.id===action.account.id;});
       if(exists)return Object.assign({},state,{accounts:state.accounts.map(function(a){return a.id===action.account.id?action.account:a;})});
@@ -2353,6 +2356,18 @@ function SettingsTab(){
   // Rename state: {key: 'exp'|'inc', cat: string}
   var re=useState(null);var editingCat=re[0];var setEditingCat=re[1];
   var rv=useState('');var renameVal=rv[0];var setRenameVal=rv[1];
+  // Edición de emoji por categoría: {key: 'exp'|'inc', cat: string}
+  var ei=useState(null);var editingIcon=ei[0];var setEditingIcon=ei[1];
+  var iv=useState('');var iconVal=iv[0];var setIconVal=iv[1];
+  // Objetivo de ahorro configurable (se guarda como clave 'savingsGoalPct' en pending_balances)
+  var sg=useState(String(settings.savingsGoalPct||25));var savGoalInput=sg[0];var setSavGoalInput=sg[1];
+  function saveSavGoal(){
+    var v=Math.min(100,Math.max(0,parseFloat(savGoalInput)||0));
+    setSavGoalInput(String(v));
+    dispatch({type:'UPDATE_SETTINGS',settings:{savingsGoalPct:v}});
+    sb.from('pending_balances').upsert([{key:'savingsGoalPct',value:v,updated_at:new Date().toISOString()}],{onConflict:'key'})
+      .then(function(r){if(r.error)logErr('savings goal save err: '+r.error.message);else logOk('savingsGoalPct: '+v);});
+  }
 
   function saveName(){if(nameInput.trim())dispatch({type:'UPDATE_SETTINGS',settings:{userName:nameInput.trim()}});setEditName(false);}
   function nextSortOrder(type){
@@ -2388,11 +2403,30 @@ function SettingsTab(){
     sbShared.from('categories').update({active:false}).eq('name',name).eq('type',type)
       .then(function(r){if(r.error)logErr('deactivate category err: '+r.error.message);else logOk('category deactivated: '+name);});
   }
+  function startIconEdit(key,cat,curIcon){setEditingIcon({key:key,cat:cat});setIconVal(curIcon||'');}
+  function commitIconEdit(dbType){
+    if(!editingIcon)return;
+    var val=iconVal.trim()||'📦';
+    dispatch({type:'SET_CATEGORY_ICON',name:editingIcon.cat,icon:val});
+    sbShared.from('categories').update({icon:val}).eq('name',editingIcon.cat).eq('type',dbType)
+      .then(function(r){if(r.error)logErr('icon save err: '+r.error.message);else logOk('icon updated: '+editingIcon.cat+' → '+val);});
+    setEditingIcon(null);setIconVal('');
+  }
   function catRow(cat,dotColor,key,dispatchRemoveType,dbType){
     var isEditing=editingCat&&editingCat.key===key&&editingCat.cat===cat;
+    var isEditingIcon=editingIcon&&editingIcon.key===key&&editingIcon.cat===cat;
+    var curIcon=(state.categoryIcons&&state.categoryIcons[cat])||SHARED_CAT_ICONS[cat]||'📦';
     var canManage=ME==='pablo'; // Aza solo puede añadir categorías, no editar/borrar
     return h('div',{key:cat,style:{display:'flex',alignItems:'center',gap:8,padding:'7px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
       h('div',{style:{width:7,height:7,borderRadius:'50%',background:dotColor,flexShrink:0}}),
+      isEditingIcon?h('input',{autoFocus:true,value:iconVal,onChange:function(e){setIconVal(e.target.value);},
+        onKeyDown:function(e){if(e.key==='Enter')commitIconEdit(dbType);if(e.key==='Escape'){setEditingIcon(null);setIconVal('');}},
+        onBlur:function(){commitIconEdit(dbType);},
+        maxLength:8,
+        style:{width:32,flexShrink:0,background:'rgba(255,255,255,0.08)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:8,color:'#EEF2FF',fontSize:15,padding:'3px 2px',outline:'none',textAlign:'center'}}):
+      !canManage?h('span',{style:{fontSize:15,flexShrink:0,width:20,textAlign:'center',lineHeight:1}},curIcon):
+        h('button',{onClick:function(){startIconEdit(key,cat,curIcon);},title:'Cambiar emoji',
+          style:{background:'none',border:'none',fontSize:15,padding:0,cursor:'pointer',flexShrink:0,width:20,textAlign:'center',lineHeight:1}},curIcon),
       isEditing?h('input',{autoFocus:true,value:renameVal,onChange:function(e){setRenameVal(e.target.value);},
         onKeyDown:function(e){if(e.key==='Enter')commitRename();if(e.key==='Escape'){setEditingCat(null);setRenameVal('');}},
         onBlur:commitRename,
@@ -2442,6 +2476,16 @@ function SettingsTab(){
         settings.incomeCategories.map(function(cat){return catRow(cat,'#4FACFE','inc','REMOVE_INCOME_CATEGORY','income');}),
         showAddInc?h('div',{style:{display:'flex',gap:8,marginTop:8}},h('input',{placeholder:'Nueva categoría',value:newIncCat,onChange:function(e){setNewIncCat(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')addIncCat();},autoFocus:true,style:ai}),h('button',{onClick:addIncCat,style:ac},'+')):h('button',{onClick:function(){setShowAddInc(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
       ):h('button',{onClick:function(){setShowAddInc(true);setOpenInc(true);},style:{background:'none',border:'1px dashed rgba(255,255,255,0.1)',borderRadius:9,color:'rgba(238,242,255,0.38)',fontSize:12,fontWeight:600,padding:'7px 12px',cursor:'pointer',width:'100%',marginTop:8,textAlign:'center'}},'+ Añadir categoría')
+    ),
+    h('div',{style:sec},
+      h('div',{style:stit},'Objetivo de Ahorro'),
+      h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.38)',marginBottom:8}},'Marca el % de meta en la barra de "Tasa de Ahorro" del Dashboard'),
+      h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+        h('input',{type:'number',min:0,max:100,value:savGoalInput,onChange:function(e){setSavGoalInput(e.target.value);},
+          onBlur:saveSavGoal,onKeyDown:function(e){if(e.key==='Enter')saveSavGoal();},
+          style:{flex:1,background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:9,color:'#EEF2FF',fontSize:14,fontWeight:700,padding:'7px 11px',outline:'none'}}),
+        h('span',{style:{fontSize:13,color:'rgba(238,242,255,0.4)'}},'%')
+      )
     ),
     h('div',{style:sec},
       h('div',{style:stit},'Cuentas de Ahorro'),
@@ -2495,7 +2539,7 @@ function SettingsTab(){
       ),
       h('button',{onClick:function(){_appLogs.length=0;},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:11,cursor:'pointer',marginTop:6}},'Limpiar log')
     ),
-    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.054 · '+MW.curMonthLabel),
+    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.055 · '+MW.curMonthLabel),
     h('div',{style:{height:16}})
   );
 }
@@ -2648,7 +2692,8 @@ function calcCatBDByMonths(exps,uid,monthsSet){
 
 function SharedAddForm(props){
   var onClose=props.onClose,cats=props.cats||[];var editExpense=props.editExpense||null;
-  var ctx=useApp();var dispatch=ctx.dispatch;
+  var ctx=useApp();var dispatch=ctx.dispatch;var state=ctx.state;
+  var catIcons=state.categoryIcons||{};
   var pab=SHARED_USERS.pablo,ell=SHARED_USERS.ella;
   // Acceso rápido a las 2 categorías más usadas (restaurante y supermercado), detectadas
   // por coincidencia parcial sobre las categorías reales del usuario (pueden variar en
@@ -2806,7 +2851,7 @@ function SharedAddForm(props){
                 borderRadius:12,border:active?'1px solid rgba(192,132,252,0.5)':'1px solid rgba(255,255,255,0.08)',
                 background:active?'rgba(192,132,252,0.18)':'rgba(255,255,255,0.04)',cursor:'pointer',
                 color:active?'#C084FC':'rgba(238,242,255,0.5)',fontWeight:active?700:500,fontSize:13}},
-              (SHARED_CAT_ICONS[c]||'\ud83d\udce6')+' '+c
+              (catIcons[c]||SHARED_CAT_ICONS[c]||'\ud83d\udce6')+' '+c
             );
           })
         )
@@ -2932,16 +2977,8 @@ function SharedTab(){
 
   var balance=calcBalance(allExp,reimbs.filter(function(r){return !r.settled;}),ME);
   var iOwe=balance<0;var balAmt=Math.abs(balance);
-
-  // Sincroniza automáticamente "Saldo Tricount" (Ajustes → Saldos Pendientes) con el balance
-  // real calculado aquí, para no tener que copiarlo a mano desde la app de Tricount.
-  // Mismo signo que calcBalance: positivo = te deben, negativo = debes tú.
-  var syncedBal=Math.round(balance*100)/100;
-  useEffect(function(){
-    if((state.pendingBalances.tricounts||0)===syncedBal)return;
-    dispatch({type:'SET_PENDING_BALANCES',balances:{tricounts:syncedBal}});
-    sb.from('pending_balances').upsert([{key:'tricounts',value:syncedBal,updated_at:new Date().toISOString()}],{onConflict:'key'}).then(function(r){if(r.error)logErr('pending save err: '+r.error.message);else logOk('tricounts auto-sync: '+syncedBal);});
-  },[syncedBal]);
+  // (El auto-sync de "Saldo Tricount" vive ahora en App() para que funcione sin
+  // depender de que esta pestaña esté montada — ver comentario en App().)
 
   var displayExp=allExp.filter(function(e){return e.month===selMonth;});
   var monthReimbs=reimbs.filter(function(r){return r.month===selMonth;});
@@ -3198,7 +3235,7 @@ function SharedTab(){
         var meUser=SHARED_USERS[ME];var otherUser=SHARED_USERS[OTHER_USER];
         return h('div',{key:expense.id,style:{display:'flex',gap:10,padding:'11px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
           h('div',{style:{width:40,height:40,borderRadius:11,background:payerUser.color+'20',display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0}},
-            SHARED_CAT_ICONS[expense.category]||'📦'
+            (state.categoryIcons&&state.categoryIcons[expense.category])||SHARED_CAT_ICONS[expense.category]||'📦'
           ),
           h('div',{style:{flex:1,minWidth:0}},
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
@@ -3207,10 +3244,7 @@ function SharedTab(){
                 h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:2}},expense.category+' · '+new Date(expense.date+'T00:00:00').toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'}))
               ),
               h('div',{style:{textAlign:'right',flexShrink:0,marginLeft:8}},
-                h('div',{style:{fontSize:14,fontWeight:700,color:'#EEF2FF'}},fmt(expense.amount)),
-                h('div',{style:{fontSize:11,fontWeight:600,marginTop:2,color:iPaid?'#3DD68C':myShare>0?'#FF6B6B':'rgba(238,242,255,0.35)'}},
-                  iPaid?(otherUser.name+' debe '+fmt(otherShare)):(myShare>0?meUser.name+' debe '+fmt(myShare):'Solo '+meUser.name)
-                )
+                h('div',{style:{fontSize:14,fontWeight:700,color:'#EEF2FF'}},fmt(expense.amount))
               )
             ),
             h('div',{style:{display:'flex',alignItems:'center',gap:5,marginTop:5}},
@@ -3286,6 +3320,18 @@ var TABS=[
 // ─── APP ──────────────────────────────────────────────────────────────────────
 function App(){
   var sr=useReducer(appReducer,INITIAL_STATE);var state=sr[0];var dispatch=sr[1];
+
+  // Sincroniza automáticamente "Saldo Tricount" (Ajustes → Saldos Pendientes) con el balance
+  // real de gastos compartidos, sin importar qué pestaña esté abierta — antes esto solo
+  // pasaba al visitar "Compartido", así que si no se abría esa pestaña en la sesión, Ajustes
+  // se quedaba mostrando el último valor guardado en Supabase (desactualizado).
+  var liveTricountBal=Math.round(calcBalance(state.sharedExpenses||[],(state.reimbursements||[]).filter(function(r){return !r.settled;}),ME)*100)/100;
+  useEffect(function(){
+    if((state.pendingBalances.tricounts||0)===liveTricountBal)return;
+    dispatch({type:'SET_PENDING_BALANCES',balances:{tricounts:liveTricountBal}});
+    sb.from('pending_balances').upsert([{key:'tricounts',value:liveTricountBal,updated_at:new Date().toISOString()}],{onConflict:'key'}).then(function(r){if(r.error)logErr('pending save err: '+r.error.message);else logOk('tricounts auto-sync: '+liveTricountBal);});
+  },[liveTricountBal]);
+
   var at=useState('dashboard');var activeTab=at[0];var setActiveTab=at[1];
   var vt=useState('dashboard');var visibleTab=vt[0];var setVisibleTab=vt[1];
   var op=useState(1);var opacity=op[0];var setOpacity=op[1];
@@ -3495,6 +3541,10 @@ function AppWithData() {
       logOk('Categories: '+expCatNames.length+' gasto, '+incCatNames.length+' ingreso');
       parsed.expenseCategories=expCatNames;
       parsed.incomeCategories=incCatNames;
+      // Emoji personalizado por categoría (columna 'icon', opcional — fallback en la UI si está vacío).
+      var catIcons={};
+      catRows.forEach(function(c){if(c.icon)catIcons[c.name]=c.icon;});
+      parsed.categoryIcons=catIcons;
       // Build accounts
       var accs=(accRes.data||[]).map(function(a){
         var hist=(histRes.data||[]).filter(function(h){return h.account_id===a.id;});
@@ -3513,9 +3563,16 @@ function AppWithData() {
       parsed.accounts=accs;
       // Build pending balances
       var pb={tricounts:0,gastosEmpresa:0,efectivo:0};
-      (pbRes.data||[]).forEach(function(r){if(pb.hasOwnProperty(r.key))pb[r.key]=parseFloat(r.value)||0;});
+      var savGoalPct=25;
+      // El objetivo de ahorro configurable se guarda como una clave más en la misma
+      // tabla 'pending_balances' (key/value genérica), bajo 'savingsGoalPct'.
+      (pbRes.data||[]).forEach(function(r){
+        if(pb.hasOwnProperty(r.key))pb[r.key]=parseFloat(r.value)||0;
+        if(r.key==='savingsGoalPct')savGoalPct=parseFloat(r.value)||25;
+      });
       parsed.pendingBalances=pb;
-      logOk('Pending balances: '+JSON.stringify(pb));
+      parsed.savingsGoalPct=savGoalPct;
+      logOk('Pending balances: '+JSON.stringify(pb)+' · Objetivo ahorro: '+savGoalPct+'%');
       parsed.fundContributions=fcRes.data||[];
       logOk('Fund contributions: '+(fcRes.data||[]).length);
       // Shared expenses (Tricount adhoc) — siempre desde sbShared
@@ -3563,7 +3620,9 @@ function AppWithData() {
     INITIAL_STATE.income = dbData.income;
     INITIAL_STATE.accounts = dbData.accounts||[];
     if(dbData.pendingBalances)INITIAL_STATE.pendingBalances=dbData.pendingBalances;
+    if(dbData.savingsGoalPct!=null)INITIAL_STATE.settings.savingsGoalPct=dbData.savingsGoalPct;
     if(dbData.fundContributions)INITIAL_STATE.fundContributions=dbData.fundContributions;
+    INITIAL_STATE.categoryIcons = dbData.categoryIcons||{};
     INITIAL_STATE.sharedExpenses = dbData.sharedExpenses||[];
     INITIAL_STATE.reimbursements = dbData.reimbursements||[];
     INITIAL_STATE.settings.expenseCategories = dbData.expenseCategories||Object.keys(dbData.expenses);
