@@ -118,7 +118,10 @@ function appReducer(state,action){
     case 'SET_SHARED_DATA':return Object.assign({},state,{sharedExpenses:action.sharedExpenses,reimbursements:action.reimbursements});
     case 'SETTLE_MONTH':return Object.assign({},state,{reimbursements:state.reimbursements.map(function(r){return r.month===action.month?Object.assign({},r,{settled:true}):r;})});
     case 'DELETE_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.filter(function(e){return e.id!==action.id;})});
+    case 'UPDATE_SHARED_EXPENSE':return Object.assign({},state,{sharedExpenses:state.sharedExpenses.map(function(e){return e.id===action.expense.id?action.expense:e;})});
     case 'ADD_REIMBURSEMENT':return Object.assign({},state,{reimbursements:[action.reimbursement].concat(state.reimbursements)});
+    case 'DELETE_REIMBURSEMENT':return Object.assign({},state,{reimbursements:state.reimbursements.filter(function(r){return r.id!==action.id;})});
+    case 'UPDATE_REIMBURSEMENT':return Object.assign({},state,{reimbursements:state.reimbursements.map(function(r){return r.id===action.reimbursement.id?action.reimbursement:r;})});
     case 'SET_GLOBAL_MONTH':return Object.assign({},state,{globalMonthIdx:action.idx});
     case 'SET_PENDING_BALANCES':return Object.assign({},state,{pendingBalances:Object.assign({},state.pendingBalances,action.balances)});
     case 'ADD_CONTRIBUTION':return Object.assign({},state,{fundContributions:state.fundContributions.concat([action.contribution])});
@@ -1040,6 +1043,10 @@ function AnalysisContent(props){
   var totalSav=accounts.reduce(function(s,a){return s+(a.balance||0);},0);
   var pendingTotal2=(props.settings&&props.settings.pendingBalances?((props.settings.pendingBalances.tricounts||0)+(props.settings.pendingBalances.gastosEmpresa||0)+(props.settings.pendingBalances.efectivo||0)):0);
   var netWorth=totalSav+pendingTotal2;
+  // Patrimonio: donut por cuenta (sustituye la barra apilada — poco legible con
+  // cuentas muy desiguales en tamaño). Solo cuentas con saldo>0, mayor a menor.
+  var ACOLS_PAT=['#3DD68C','#4FACFE','#FFD166','#C084FC','#FB923C','#FF6B6B','#60A5FA','#F472B6'];
+  var patAccounts=accounts.filter(function(a){return (a.balance||0)>0;}).sort(function(a,b){return b.balance-a.balance;});
 
   var surplusTrend=idxs.map(function(mi){
     var inc=Object.values(income).reduce(function(s,a){return s+(a[mi]||0);},0);
@@ -1047,14 +1054,11 @@ function AnalysisContent(props){
     return inc-exp;
   });
   var surplusLbl=getChartLabels(idxs);
-  // Last surplus: find last month with actual income or expense data
-  var lastSurplus=0;
-  for(var _si=surplusTrend.length-1;_si>=0;_si--){
-    var _mi=idxs[_si];
-    var _hasData=Object.values(income).some(function(a){return (a[_mi]||0)>0;})||Object.values(expenses).some(function(a){return (a[_mi]||0)>0;});
-    if(_hasData){lastSurplus=surplusTrend[_si];break;}
-  }
-  var avgSurplus=surplusTrend.length>0?Math.round(surplusTrend.reduce(function(s,v){return s+v;},0)/surplusTrend.length):0;
+  // Total y promedio del superávit dentro del periodo seleccionado — ambos
+  // cambian con el filtro (1M/3M/6M/12M/Año/Max), a diferencia del antiguo
+  // "último mes con datos" que era constante sin importar el filtro elegido.
+  var totalSurplus=Math.round(surplusTrend.reduce(function(s,v){return s+v;},0));
+  var avgSurplus=surplusTrend.length>0?Math.round(totalSurplus/surplusTrend.length):0;
 
   var trends=analysisType==='gastos'?catTrends:incTrends;
 
@@ -1119,25 +1123,17 @@ function AnalysisContent(props){
           h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:3}},'suma de cuentas')
         )
       ),
-      // Stacked bar patrimonio
-      accounts.length>0&&netWorth>0?h('div',{style:{marginBottom:6}},
-        h('div',{style:{display:'flex',height:12,borderRadius:6,overflow:'hidden',gap:2,marginBottom:10}},
-          accounts.map(function(acc,i){
-            var ACOLS=['#3DD68C','#4FACFE','#FFD166','#C084FC','#FB923C'];
-            var pct=Math.max(0.5,acc.balance/netWorth*100);
-            return h('div',{key:acc.id,style:{width:pct+'%',background:ACOLS[i%ACOLS.length],borderRadius:3,transition:'width 0.5s ease',minWidth:4}});
-          })
-        ),
-        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'6px 12px'}},
-          accounts.map(function(acc,i){
-            var ACOLS=['#3DD68C','#4FACFE','#FFD166','#C084FC','#FB923C'];
+      // Donut patrimonio
+      patAccounts.length>0&&netWorth>0?h('div',{style:{display:'flex',gap:14,alignItems:'center'}},
+        h(DonutChart,{segments:patAccounts.map(function(acc,i){return{value:acc.balance,color:ACOLS_PAT[i%ACOLS_PAT.length]};}),segLabels:patAccounts.map(function(a){return a.name;}),size:110,thickness:15}),
+        h('div',{style:{flex:1,minWidth:0}},
+          patAccounts.map(function(acc,i){
             var pct=netWorth>0?Math.round(acc.balance/netWorth*100):0;
-            return h('div',{key:acc.id,style:{display:'flex',alignItems:'center',gap:6,minWidth:0}},
-              h('div',{style:{width:10,height:10,borderRadius:3,background:ACOLS[i%ACOLS.length],flexShrink:0}}),
-              h('div',{style:{minWidth:0}},
-                h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.7)',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},acc.name),
-                h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.4)'}},fmt(acc.balance)+' · '+pct+'%')
-              )
+            return h('div',{key:acc.id,style:{display:'flex',alignItems:'center',gap:6,marginBottom:6}},
+              h('div',{style:{width:8,height:8,borderRadius:'50%',background:ACOLS_PAT[i%ACOLS_PAT.length],flexShrink:0}}),
+              h('span',{style:{flex:1,fontSize:11,color:'rgba(238,242,255,0.68)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},acc.name),
+              h('span',{style:{fontSize:10,color:'rgba(238,242,255,0.35)',minWidth:24,textAlign:'right'}},pct+'%'),
+              h('span',{style:{fontSize:11,fontWeight:600,color:'#EEF2FF',minWidth:60,textAlign:'right'}},fmt(acc.balance))
             );
           })
         )
@@ -1149,7 +1145,7 @@ function AnalysisContent(props){
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
         h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF'}},'Superávit Mensual'),
         h('div',{style:{textAlign:'right'}},
-          h('div',{style:{fontSize:12,fontWeight:700,color:lastSurplus>=0?'#3DD68C':'#FF6B6B'}},fmt(lastSurplus)),
+          h('div',{style:{fontSize:12,fontWeight:700,color:totalSurplus>=0?'#3DD68C':'#FF6B6B'}},fmt(totalSurplus)),
           h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.35)',marginTop:1}},'Ø '+fmt(avgSurplus)+'/mes')
         )
       ),
@@ -2298,6 +2294,7 @@ function AccountBalanceEditor(props){
 // ─── PENDING BALANCE ROW ─────────────────────────────────────────────────────
 function PendingBalanceRow(props){
   var label=props.label,hint=props.hint,value=props.value,allowNeg=props.allowNegative,onChange=props.onChange;
+  var readOnly=props.readOnly;
   var es=useState(false);var editing=es[0];var setEditing=es[1];
   var vs=useState(String(value));var val=vs[0];var setVal=vs[1];
   var isPos=value>0,isNeg=value<0;
@@ -2314,6 +2311,13 @@ function PendingBalanceRow(props){
       h('div',{style:{fontSize:13,fontWeight:600,color:'#EEF2FF'}},label),
       h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.35)',marginTop:2}},hint)
     ),
+    readOnly?
+      h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+        h('div',{style:{fontSize:16,fontWeight:800,color:color}},
+          (isPos?'+':'')+fmt2(value)
+        ),
+        h('span',{style:{fontSize:11,color:'rgba(238,242,255,0.3)'}},'🔄')
+      ):
     editing?
       h('div',{style:{display:'flex',alignItems:'center',gap:4}},
         h('input',{type:'number',value:val,
@@ -2452,10 +2456,9 @@ function SettingsTab(){
       h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.38)',marginBottom:12}},'No llevan seguimiento, solo el valor actual'),
       h(PendingBalanceRow,{
         label:'Tricount',
-        hint:'Positivo: te deben · Negativo: debes tú',
+        hint:'Auto: calculado desde Compartido · Positivo: te deben',
         value:state.pendingBalances.tricounts,
-        allowNegative:true,
-        onChange:function(v){dispatch({type:'SET_PENDING_BALANCES',balances:{tricounts:v}});sb.from('pending_balances').upsert([{key:'tricounts',value:v,updated_at:new Date().toISOString()}],{onConflict:'key'}).then(function(r){if(r.error)logErr('pending save err: '+r.error.message);else logOk('tricounts saved: '+v);});}
+        readOnly:true
       }),
       h(PendingBalanceRow,{
         label:'Gastos empresa',
@@ -2492,7 +2495,7 @@ function SettingsTab(){
       ),
       h('button',{onClick:function(){_appLogs.length=0;},style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:11,cursor:'pointer',marginTop:6}},'Limpiar log')
     ),
-    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.037 · '+MW.curMonthLabel),
+    h('div',{style:{textAlign:'center',fontSize:10,color:'rgba(238,242,255,0.2)',marginTop:10}},'Finergy v1.054 · '+MW.curMonthLabel),
     h('div',{style:{height:16}})
   );
 }
@@ -2508,41 +2511,133 @@ function calcShares(e){
   var el=Math.round((t-p)*100)/100;
   return{pablo:p,ella:el};
 }
+// Una fila es fiable para saber "quién pagó" si es alquiler (siempre Pablo, confirmado)
+// o si no viene del import histórico de Tricount (donde paid_by quedó por defecto, sin dato real).
+function isHistoricalImport(e){ return e.description==='Histórico Tricount'; }
+function payerReliable(e){
+  return e.category==='Alquiler y compra' || !isHistoricalImport(e);
+}
+// El saldo pendiente (lo que se puede "saldar") solo se calcula sobre el periodo con
+// seguimiento real, excluyendo TODO el import histórico (incluido el alquiler): aunque
+// sepamos quién pagó el alquiler en ese periodo, no sabemos si ya se compensó por otra vía
+// (pagos en otras categorías cuyo pagador no quedó registrado), así que no es fiable para
+// un saldo acumulado/accionable.
 function calcBalance(exps,reimbs,uid){
   var oth=uid==='pablo'?'ella':'pablo',bal=0;
   exps.forEach(function(e){
+    if(isHistoricalImport(e))return;
     var sh=calcShares(e);
     if(e.paidBy===uid)bal+=sh[oth];else bal-=sh[uid];
   });
   reimbs.filter(function(r){return !r.settled;}).forEach(function(r){
-    if(r.to===uid)bal+=r.amount;if(r.from===uid)bal-=r.amount;
+    // Un reembolso es un pago real de 'from' a 'to' que SALDA deuda, no que la crea:
+    // reduce lo que 'to' tenía a su favor y aumenta lo que 'from' tenía a su favor.
+    if(r.to===uid)bal-=r.amount;if(r.from===uid)bal+=r.amount;
   });
   return bal;
 }
+// uid-aware: 'myShareAmount' en BD es siempre la parte de Pablo; aquí se traduce
+// a la parte de quien sea ME en este build (Pablo o Aza).
 function calcCatBD(exps,uid){
   var cats={};
+  var oth=uid==='pablo'?'ella':'pablo';
   exps.forEach(function(e){
     var cat=e.category;
     if(!cats[cat])cats[cat]={total:0,myShare:0,otherShare:0};
+    var sh=calcShares(e);
     cats[cat].total+=e.amount;
-    cats[cat].myShare+=e.myShareAmount||0;
-    cats[cat].otherShare+=Math.round((e.amount-(e.myShareAmount||0))*100)/100;
+    cats[cat].myShare+=sh[uid];
+    cats[cat].otherShare+=sh[oth];
+  });
+  return cats;
+}
+// Desglose completo por categoría: cuánto pagó físicamente cada uno (paidMe/paidOther),
+// cuánto le corresponde a cada uno según el reparto (splitMe/splitOther), y la deuda
+// cruzada que generó cada pago (otherOwesMe: lo que el otro pagó y era mío → me lo debe;
+// iOweOther: lo que yo pagué y era del otro → se lo debo). uid-aware.
+function calcCatFull(exps,uid){
+  var oth=uid==='pablo'?'ella':'pablo';
+  var cats={};
+  // Para el import histórico sin pagador fiable (ver isHistoricalImport/payerReliable),
+  // estimamos en silencio quién pagó cada gasto: como Pablo siempre pagó el 100% del
+  // alquiler histórico, Aza tuvo que compensar pagando de más en el resto de categorías
+  // ese mes, en la cuantía exacta de su parte de alquiler. Repartimos ese hueco proporcionalmente
+  // al peso de cada gasto no fiable dentro del total no fiable del mes. Esto NUNCA toca gastos
+  // nuevos (no históricos): solo aplica dentro de isHistoricalImport.
+  var byMonth={};
+  exps.forEach(function(e){
+    if(!isHistoricalImport(e))return;
+    if(!byMonth[e.month])byMonth[e.month]={rentGapElla:0,unreliableTotal:0};
+    var mo=byMonth[e.month];
+    if(e.category==='Alquiler y compra'){mo.rentGapElla=calcShares(e).ella;}
+    else{mo.unreliableTotal+=e.amount;}
+  });
+  exps.forEach(function(e){
+    var cat=e.category;
+    if(!cats[cat])cats[cat]={total:0,paidMe:0,paidOther:0,splitMe:0,splitOther:0,otherOwesMe:0,iOweOther:0};
+    var c=cats[cat];
+    var sh=calcShares(e);
+    c.total+=e.amount;
+    c.splitMe+=sh[uid];
+    c.splitOther+=sh[oth];
+    if(payerReliable(e)){
+      if(e.paidBy===uid){c.paidMe+=e.amount;c.otherOwesMe+=sh[oth];}
+      else{c.paidOther+=e.amount;c.iOweOther+=sh[uid];}
+      return;
+    }
+    var mo=byMonth[e.month];
+    var gap=(mo&&mo.rentGapElla)||0;
+    var w=(mo&&mo.unreliableTotal>0&&e.category!=='Alquiler y compra')?e.amount/mo.unreliableTotal:0;
+    var paidElla=sh.ella+gap*w;
+    if(paidElla<0)paidElla=0;if(paidElla>e.amount)paidElla=e.amount;
+    var paidPablo=e.amount-paidElla;
+    var paidMeEst=uid==='pablo'?paidPablo:paidElla;
+    var paidOtherEst=e.amount-paidMeEst;
+    c.paidMe+=paidMeEst;
+    c.paidOther+=paidOtherEst;
   });
   return cats;
 }
 
 // Evolución mes a mes del módulo Compartido: total, mi parte, pagado por cada uno.
+// uid-aware. IMPORTANTE: 'paidMe'/'paidOther' se calculan reusando calcCatFull (igual
+// que la tarjeta "Por categoría"), NO un campo 'paidByMe' propio del gasto — ese campo
+// venía de una columna 'paid_by_me' que nunca existió en shared_expenses (siempre daba 0),
+// lo que hacía que el gráfico "Por pagador" no coincidiera con el desglose por categoría.
 function calcMonthlySeries(exps,uid){
   var months=Array.from(new Set(exps.map(function(e){return e.month;}))).sort();
   var byMonth={};
-  months.forEach(function(m){byMonth[m]={total:0,mine:0,paidByMe:0,paidByOther:0};});
-  exps.forEach(function(e){
-    var b=byMonth[e.month];
-    b.total+=e.amount;
-    b.mine+=e.myShareAmount||0;
-    if(e.paidBy==='me'||e.paidBy===uid)b.paidByMe+=e.amount;else b.paidByOther+=e.amount;
+  months.forEach(function(m){
+    var monthExps=exps.filter(function(e){return e.month===m;});
+    var bd=calcCatFull(monthExps,uid);
+    var total=0,mine=0,paidByMe=0,paidByOther=0;
+    Object.keys(bd).forEach(function(cat){
+      var c=bd[cat];
+      total+=c.total;mine+=c.splitMe;paidByMe+=c.paidMe;paidByOther+=c.paidOther;
+    });
+    byMonth[m]={total:total,mine:mine,paidByMe:paidByMe,paidByOther:paidByOther};
   });
   return{months:months,byMonth:byMonth};
+}
+
+// Evolución dentro de un mes concreto: gasto acumulado día a día (para el tab "Intramensual").
+function calcIntraMonthSeries(exps,monthStr){
+  var year=parseInt(monthStr.slice(0,4),10),mon=parseInt(monthStr.slice(5,7),10);
+  var daysInMonth=new Date(year,mon,0).getDate();
+  var dayTotals=new Array(daysInMonth+1).fill(0);
+  exps.forEach(function(e){
+    var ds=e.date||(monthStr+'-01');
+    var day=parseInt(ds.slice(8,10),10)||1;
+    if(day<1)day=1;if(day>daysInMonth)day=daysInMonth;
+    dayTotals[day]+=e.amount;
+  });
+  var days=[],data=[],cum=0;
+  for(var d=1;d<=daysInMonth;d++){
+    cum+=dayTotals[d];
+    days.push(d);
+    data.push(Math.round(cum*100)/100);
+  }
+  return{days:days,data:data};
 }
 
 // Desglose por categoría agregado en un rango de meses (para la tarta con histórico completo).
@@ -2552,12 +2647,30 @@ function calcCatBDByMonths(exps,uid,monthsSet){
 }
 
 function SharedAddForm(props){
-  var onClose=props.onClose,cats=props.cats||[];
+  var onClose=props.onClose,cats=props.cats||[];var editExpense=props.editExpense||null;
   var ctx=useApp();var dispatch=ctx.dispatch;
   var pab=SHARED_USERS.pablo,ell=SHARED_USERS.ella;
-  var fs=useState({paidBy:ME,date:new Date().toISOString().slice(0,10),
-    category:cats[0]||'Otros',description:'',amount:'',
-    splitType:'pct',pabloPct:50,ellaPct:50,pabloFixed:'',ellaFixed:''});
+  // Acceso rápido a las 2 categorías más usadas (restaurante y supermercado), detectadas
+  // por coincidencia parcial sobre las categorías reales del usuario (pueden variar en
+  // singular/plural o acentos) para no depender de un nombre exacto.
+  var quickCats=['restaurant','supermerc'].map(function(kw){
+    return cats.find(function(c){return c.toLowerCase().indexOf(kw)>=0;});
+  }).filter(Boolean);
+  // Si estamos editando, precargamos el formulario a partir del gasto existente.
+  // myShareAmount en el estado de la app es siempre la parte absoluta de Pablo.
+  var initForm=(function(){
+    if(!editExpense)return{paidBy:ME,date:new Date().toISOString().slice(0,10),
+      category:cats[0]||'Otros',description:'',amount:'',
+      splitType:'pct',pabloPct:50,ellaPct:50,pabloFixed:'',ellaFixed:''};
+    var amt=editExpense.amount||0;
+    var st=editExpense.splitType==='percentage'?'pct':(editExpense.splitType||'pct');
+    var pabloPct=st==='solo'?(editExpense.myShareAmount>=amt-0.01?100:0):(amt>0?Math.round((editExpense.myShareAmount/amt)*100):50);
+    return{paidBy:editExpense.paidBy,date:editExpense.date||(editExpense.month+'-01'),
+      category:editExpense.category,description:editExpense.description,amount:String(amt),
+      splitType:st,pabloPct:pabloPct,ellaPct:100-pabloPct,
+      pabloFixed:String(editExpense.myShareAmount||0),ellaFixed:String(Math.round((amt-(editExpense.myShareAmount||0))*100)/100)};
+  })();
+  var fs=useState(initForm);
   var form=fs[0];var setForm=fs[1];
   function setF(k,v){setForm(function(f){var u={};u[k]=v;return Object.assign({},f,u);});}
   function setPct(who,val){
@@ -2574,19 +2687,41 @@ function SharedAddForm(props){
     else if(form.splitType==='fixed')pabloShare=parseFloat(form.pabloFixed)||0;
     else pabloShare=form.pabloPct===100?amt:0;
     var month=form.date.slice(0,7);
+    if(editExpense){
+      var updated={
+        id:editExpense.id,paidBy:form.paidBy,
+        category:form.category,description:form.description,
+        amount:amt,myShareAmount:pabloShare,splitType:form.splitType,month:month,date:form.date
+      };
+      dispatch({type:'UPDATE_SHARED_EXPENSE',expense:updated});
+      sbShared.from('shared_expenses').update({
+        month:updated.month,date:updated.date,description:updated.description,category:updated.category,
+        total_amount:updated.amount,
+        paid_by:updated.paidBy==='pablo'?'me':'partner',
+        my_share_pct:amt>0?Math.round((pabloShare/amt)*10000)/100:0,
+        my_share_amount:pabloShare,
+        // Supabase solo admite split_type ('percentage'|'fixed'); 'solo' es un caso particular
+        // de percentage (100/0) — se traduce aquí para no romper el constraint de la BD.
+        split_type:updated.splitType==='fixed'?'fixed':'percentage'
+      }).eq('id',editExpense.id).then(function(r){if(r.error)logErr('update shared_expense err: '+r.error.message);else logOk('shared_expense updated: '+editExpense.id);});
+      onClose();
+      return;
+    }
     var newExpense={
       id:'se'+Date.now(),paidBy:form.paidBy,
       category:form.category,description:form.description,
-      amount:amt,myShareAmount:pabloShare,splitType:form.splitType,month:month
+      amount:amt,myShareAmount:pabloShare,splitType:form.splitType,month:month,date:form.date
     };
     dispatch({type:'ADD_SHARED_EXPENSE',expense:newExpense});
     sbShared.from('shared_expenses').insert([{
-      month:newExpense.month,description:newExpense.description,category:newExpense.category,
+      month:newExpense.month,date:newExpense.date,description:newExpense.description,category:newExpense.category,
       total_amount:newExpense.amount,
       paid_by:newExpense.paidBy==='pablo'?'me':'partner',
       my_share_pct:amt>0?Math.round((pabloShare/amt)*10000)/100:0,
       my_share_amount:pabloShare,
-      split_type:newExpense.splitType==='pct'?'percentage':newExpense.splitType
+      // Supabase solo admite split_type ('percentage'|'fixed'); 'solo' es un caso particular
+      // de percentage (100/0) — se traduce aquí para no romper el constraint de la BD.
+      split_type:newExpense.splitType==='fixed'?'fixed':'percentage'
     }]).select().then(function(r){
       if(r.error){logErr('shared_expense save err: '+r.error.message);return;}
       // El id real lo asigna Supabase (bigint autoincremental); actualizamos el estado local con el id definitivo.
@@ -2647,10 +2782,10 @@ function SharedAddForm(props){
     );
   }
 
-  return h('div',{style:{position:'fixed',inset:0,background:'rgba(4,8,16,0.93)',zIndex:200,display:'flex',alignItems:'flex-end',justifyContent:'center'}},
-    h('div',{style:{width:'100%',maxWidth:430,background:'#0C1525',borderRadius:'20px 20px 0 0',padding:'20px 18px',paddingBottom:'max(24px,env(safe-area-inset-bottom,24px))',maxHeight:'90vh',overflowY:'auto'}},
+  return h('div',{style:{position:'fixed',inset:0,background:'rgba(4,8,16,0.93)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}},
+    h('div',{style:{width:'100%',maxWidth:430,background:'#0C1525',borderRadius:'20px 20px 0 0',padding:'20px 18px',paddingBottom:'max(80px,calc(env(safe-area-inset-bottom,0px) + 80px))',maxHeight:'92vh',overflowY:'auto'}},
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}},
-        h('div',{style:{fontSize:18,fontWeight:800,color:'#EEF2FF'}},'Nuevo gasto'),
+        h('div',{style:{fontSize:18,fontWeight:800,color:'#EEF2FF'}},editExpense?'Editar gasto':'Nuevo gasto'),
         h('button',{onClick:onClose,style:{background:'rgba(255,255,255,0.08)',border:'none',borderRadius:8,color:'rgba(238,242,255,0.6)',fontSize:16,padding:'6px 12px',cursor:'pointer'}},'\u2715')
       ),
       h('div',{style:{marginBottom:14}},
@@ -2661,6 +2796,21 @@ function SharedAddForm(props){
         h('div',null,h('label',{style:lab},'Descripci\u00f3n'),h('input',{type:'text',placeholder:'Mercadona...',value:form.description,onChange:function(e){setF('description',e.target.value);},style:fi})),
         h('div',null,h('label',{style:lab},'Importe \u20ac'),h('input',{type:'number',placeholder:'0.00',value:form.amount,onChange:function(e){setF('amount',e.target.value);},style:fi}))
       ),
+      quickCats.length>0?h('div',{style:{marginBottom:14}},
+        h('label',{style:lab},'R\u00e1pido'),
+        h('div',{style:{display:'flex',gap:8}},
+          quickCats.map(function(c){
+            var active=form.category===c;
+            return h('button',{key:c,onClick:function(){setF('category',c);},
+              style:{flex:1,display:'flex',alignItems:'center',justifyContent:'center',gap:6,padding:'10px 0',
+                borderRadius:12,border:active?'1px solid rgba(192,132,252,0.5)':'1px solid rgba(255,255,255,0.08)',
+                background:active?'rgba(192,132,252,0.18)':'rgba(255,255,255,0.04)',cursor:'pointer',
+                color:active?'#C084FC':'rgba(238,242,255,0.5)',fontWeight:active?700:500,fontSize:13}},
+              (SHARED_CAT_ICONS[c]||'\ud83d\udce6')+' '+c
+            );
+          })
+        )
+      ):null,
       h('div',{style:{display:'flex',flexDirection:'column',gap:10,marginBottom:14}},
         h('div',null,h('label',{style:lab},'Fecha'),h('input',{type:'date',value:form.date,onChange:function(e){setF('date',e.target.value);},style:fi})),
         h('div',null,h('label',{style:lab},'Categor\u00eda'),
@@ -2683,7 +2833,59 @@ function SharedAddForm(props){
         form.splitType==='solo' ?h('div',{style:{display:'flex',gap:8}},soloBtn(pab),soloBtn(ell)):null
       ),
       h('button',{onClick:handleSubmit,style:{background:'linear-gradient(135deg,rgba(61,214,140,0.8),rgba(79,172,254,0.8))',border:'none',borderRadius:14,color:'#070D1A',fontSize:15,fontWeight:800,padding:'14px 0',cursor:'pointer',width:'100%'}},
-        'A\u00f1adir gasto'
+        editExpense?'Guardar cambios':'A\u00f1adir gasto'
+      )
+    )
+  );
+}
+
+function ReimbEditForm(props){
+  var reimb=props.reimb,onClose=props.onClose;
+  var ctx=useApp();var dispatch=ctx.dispatch;
+  var initDir=reimb.from===ME; // true = ME\u2192PARTNER (misma convenci\u00f3n que handleReimb)
+  var rd=useState(initDir);var dir=rd[0];var setDir=rd[1];
+  var ra=useState(String(reimb.amount));var amt=ra[0];var setAmt=ra[1];
+  var rdate=useState(reimb.date);var date=rdate[0];var setDate=rdate[1];
+  var rn=useState(reimb.note||'');var note=rn[0];var setNote=rn[1];
+  var fi={background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#EEF2FF',fontSize:13,padding:'9px 12px',outline:'none',width:'100%',boxSizing:'border-box'};
+  var lab={fontSize:10,color:'rgba(238,242,255,0.45)',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em',display:'block',marginBottom:6};
+  function handleSave(){
+    var a=parseFloat(amt);if(!a)return;
+    var fromUser=dir?ME:OTHER_USER;
+    var toUser=dir?OTHER_USER:ME;
+    var month=date.slice(0,7);
+    var updated={id:reimb.id,from:fromUser,to:toUser,amount:a,date:date,note:note||'Reembolso',month:month,settled:reimb.settled};
+    dispatch({type:'UPDATE_REIMBURSEMENT',reimbursement:updated});
+    sbShared.from('reimbursements').update({"from":fromUser,"to":toUser,amount:a,date:date,month:month,note:updated.note}).eq('id',reimb.id).then(function(r){if(r.error)logErr('update reimbursement err: '+r.error.message);else logOk('reimbursement updated: '+reimb.id);});
+    onClose();
+  }
+  function handleDelete(){
+    if(!window.confirm('\u00bfBorrar este reembolso?'))return;
+    dispatch({type:'DELETE_REIMBURSEMENT',id:reimb.id});
+    sbShared.from('reimbursements').delete().eq('id',reimb.id).then(function(r){if(r.error)logErr('delete reimbursement err: '+r.error.message);});
+    onClose();
+  }
+  return h('div',{style:{position:'fixed',inset:0,background:'rgba(4,8,16,0.93)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}},
+    h('div',{style:{width:'100%',maxWidth:430,background:'#0C1525',borderRadius:'20px 20px 0 0',padding:'20px 18px',paddingBottom:'max(80px,calc(env(safe-area-inset-bottom,0px) + 80px))',maxHeight:'92vh',overflowY:'auto'}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}},
+        h('div',{style:{fontSize:18,fontWeight:800,color:'#EEF2FF'}},'Editar reembolso'),
+        h('button',{onClick:onClose,style:{background:'rgba(255,255,255,0.08)',border:'none',borderRadius:8,color:'rgba(238,242,255,0.6)',fontSize:16,padding:'6px 12px',cursor:'pointer'}},'\u2715')
+      ),
+      h('div',{style:{display:'flex',gap:6,marginBottom:14}},
+        h('button',{onClick:function(){setDir(true);},style:{flex:1,background:dir?'rgba(255,107,107,0.15)':'rgba(255,255,255,0.05)',border:'1px solid '+(dir?'rgba(255,107,107,0.3)':'rgba(255,255,255,0.1)'),borderRadius:9,color:dir?'#FF6B6B':'rgba(238,242,255,0.4)',fontSize:12,fontWeight:600,padding:'9px 0',cursor:'pointer'}},ME_USER.name+' \u2192 '+PARTNER.name),
+        h('button',{onClick:function(){setDir(false);},style:{flex:1,background:!dir?'rgba(61,214,140,0.15)':'rgba(255,255,255,0.05)',border:'1px solid '+(!dir?'rgba(61,214,140,0.3)':'rgba(255,255,255,0.1)'),borderRadius:9,color:!dir?'#3DD68C':'rgba(238,242,255,0.4)',fontSize:12,fontWeight:600,padding:'9px 0',cursor:'pointer'}},PARTNER.name+' \u2192 '+ME_USER.name)
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:14}},
+        h('div',null,h('label',{style:lab},'Importe \u20ac'),h('input',{type:'number',value:amt,onChange:function(e){setAmt(e.target.value);},style:fi})),
+        h('div',null,h('label',{style:lab},'Fecha'),h('input',{type:'date',value:date,onChange:function(e){setDate(e.target.value);},style:fi}))
+      ),
+      h('div',{style:{marginBottom:18}},
+        h('label',{style:lab},'Nota'),
+        h('input',{type:'text',placeholder:'Concepto...',value:note,onChange:function(e){setNote(e.target.value);},style:fi})
+      ),
+      h('div',{style:{display:'flex',gap:8}},
+        h('button',{onClick:handleDelete,style:{flex:1,background:'rgba(255,107,107,0.12)',border:'1px solid rgba(255,107,107,0.25)',borderRadius:14,color:'#FF6B6B',fontSize:14,fontWeight:700,padding:'13px 0',cursor:'pointer'}},'Eliminar'),
+        h('button',{onClick:handleSave,style:{flex:2,background:'linear-gradient(135deg,rgba(61,214,140,0.8),rgba(79,172,254,0.8))',border:'none',borderRadius:14,color:'#070D1A',fontSize:15,fontWeight:800,padding:'13px 0',cursor:'pointer'}},'Guardar cambios')
       )
     )
   );
@@ -2699,7 +2901,6 @@ function SharedTab(){
   var reimbs=state.reimbursements||[];
 
   var sa=useState(false);var showAdd=sa[0];var setShowAdd=sa[1];
-  var sv=useState('pending');var view=sv[0];var setView=sv[1];
   var sm=useState(THIS_MONTH_S);var selMonth=sm[0];var setSelMonth=sm[1];
   var sr=useState(false);var showReimb=sr[0];var setShowReimb=sr[1];
   var ra=useState('');var reimbAmt=ra[0];var setReimbAmt=ra[1];
@@ -2707,8 +2908,11 @@ function SharedTab(){
   var lm=useState('total');var lineMetric=lm[0];var setLineMetric=lm[1]; // 'total' | 'mine' | 'byPayer'
   var pm=useState('total');var pieMetric=pm[0];var setPieMetric=pm[1]; // 'total' | 'mine'
   var rf=useState(false);var refreshing=rf[0];var setRefreshing=rf[1];
-  var ec=useState(false);var expCollapsed=ec[0];var setExpCollapsed=ec[1];
+  var ec=useState(true);var expCollapsed=ec[0];var setExpCollapsed=ec[1];
   var rt=useState(null);var lastRefresh=rt[0];var setLastRefresh=rt[1];
+  var as=useState(false);var showAssign=as[0];var setShowAssign=as[1];
+  var ee=useState(null);var editExpense=ee[0];var setEditExpense=ee[1];
+  var er=useState(null);var editReimb=er[0];var setEditReimb=er[1];
 
   function doRefresh(){
     setRefreshing(true);
@@ -2729,21 +2933,38 @@ function SharedTab(){
   var balance=calcBalance(allExp,reimbs.filter(function(r){return !r.settled;}),ME);
   var iOwe=balance<0;var balAmt=Math.abs(balance);
 
+  // Sincroniza automáticamente "Saldo Tricount" (Ajustes → Saldos Pendientes) con el balance
+  // real calculado aquí, para no tener que copiarlo a mano desde la app de Tricount.
+  // Mismo signo que calcBalance: positivo = te deben, negativo = debes tú.
+  var syncedBal=Math.round(balance*100)/100;
+  useEffect(function(){
+    if((state.pendingBalances.tricounts||0)===syncedBal)return;
+    dispatch({type:'SET_PENDING_BALANCES',balances:{tricounts:syncedBal}});
+    sb.from('pending_balances').upsert([{key:'tricounts',value:syncedBal,updated_at:new Date().toISOString()}],{onConflict:'key'}).then(function(r){if(r.error)logErr('pending save err: '+r.error.message);else logOk('tricounts auto-sync: '+syncedBal);});
+  },[syncedBal]);
+
   var displayExp=allExp.filter(function(e){return e.month===selMonth;});
-  var bd=calcCatBD(displayExp,ME);
+  var monthReimbs=reimbs.filter(function(r){return r.month===selMonth;});
+  var bd=calcCatFull(displayExp,ME);
   var catEntries=Object.entries(bd).sort(function(a,b){return b[1].total-a[1].total;});
 
-  // ── Evolución mes a mes (siempre sobre el histórico completo) ──
+  // ── Evolución mes a mes (histórico completo) o intramensual (mes seleccionado) ──
   var monthly=calcMonthlySeries(allExp,ME);
   var evoMonths=monthly.months;
-  var evoLabels=evoMonths.map(function(m){return new Date(m+'-01').toLocaleDateString('es-ES',{month:'short',year:'2-digit'});});
-  var lineSeries=lineMetric==='byPayer'
-    ?[
-      {label:SHARED_USERS[ME].name,color:SHARED_USERS[ME].color,data:evoMonths.map(function(m){return monthly.byMonth[m].paidByMe;})},
-      {label:PARTNER.name,color:PARTNER.color,data:evoMonths.map(function(m){return monthly.byMonth[m].paidByOther;})}
-    ]
-    :[{label:lineMetric==='mine'?'Mi parte':'Total compartido',color:'#4FACFE',
-       data:evoMonths.map(function(m){return lineMetric==='mine'?monthly.byMonth[m].mine:monthly.byMonth[m].total;})}];
+  var monthLabelLong=new Date(selMonth+'-01').toLocaleDateString('es-ES',{month:'long',year:'numeric'});
+  var intraSeries=lineMetric==='intra'?calcIntraMonthSeries(displayExp,selMonth):null;
+  var evoLabels=lineMetric==='intra'
+    ?intraSeries.days.map(function(d){return String(d);})
+    :evoMonths.map(function(m){return new Date(m+'-01').toLocaleDateString('es-ES',{month:'short',year:'2-digit'});});
+  var lineSeries=lineMetric==='intra'
+    ?[{label:'Gasto acumulado',color:'#4FACFE',data:intraSeries.data}]
+    :lineMetric==='byPayer'
+      ?[
+        {label:SHARED_USERS[ME].name,color:SHARED_USERS[ME].color,data:evoMonths.map(function(m){return monthly.byMonth[m].paidByMe;})},
+        {label:PARTNER.name,color:PARTNER.color,data:evoMonths.map(function(m){return monthly.byMonth[m].total-monthly.byMonth[m].paidByMe;})}
+      ]
+      :[{label:lineMetric==='mine'?ME_USER.name:'Total compartido',color:'#4FACFE',
+         data:evoMonths.map(function(m){return lineMetric==='mine'?monthly.byMonth[m].mine:monthly.byMonth[m].total;})}];
 
   // ── Tarta por categoría (histórico completo) ──
   var pieBD=calcCatBD(allExp,ME);
@@ -2754,18 +2975,23 @@ function SharedTab(){
   var pieLabels=pieEntries.map(function(e){return e.cat;});
   var pieTotal=pieEntries.reduce(function(s,e){return s+e.value;},0);
 
+  var rd=useState(true);var reimbDir=rd[0];var setReimbDir=rd[1]; // true = yo pago a Aza, false = Aza paga a mí
+  var rdate=useState(new Date().toISOString().slice(0,10));var reimbDate=rdate[0];var setReimbDate=rdate[1];
+
   function handleReimb(){
     var amt=parseFloat(reimbAmt);if(!amt)return;
+    var fromUser=reimbDir?ME:OTHER_USER;
+    var toUser=reimbDir?OTHER_USER:ME;
+    var month=reimbDate.slice(0,7);
     var newReimb={
-      id:'r'+Date.now(),from:iOwe?ME:OTHER_USER,to:iOwe?OTHER_USER:ME,
-      amount:amt,date:new Date().toISOString().slice(0,10),
-      note:reimbNote||'Reembolso',month:THIS_MONTH_S,settled:false
+      id:'r'+Date.now(),from:fromUser,to:toUser,
+      amount:amt,date:reimbDate,note:reimbNote||'Reembolso',month:month,settled:false
     };
     dispatch({type:'ADD_REIMBURSEMENT',reimbursement:newReimb});
     sbShared.from('reimbursements').insert([{
       id:newReimb.id,
-      "from":newReimb.from==='pablo'?'me':'partner',
-      "to":newReimb.to==='pablo'?'me':'partner',
+      "from":fromUser==='pablo'?'pablo':'ella',
+      "to":toUser==='pablo'?'pablo':'ella',
       amount:newReimb.amount,
       date:newReimb.date,month:newReimb.month,note:newReimb.note,settled:false
     }]).then(function(r){if(r.error)logErr('reimbursement save err: '+r.error.message);else logOk('reimbursement saved: '+newReimb.id);});
@@ -2800,7 +3026,7 @@ function SharedTab(){
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:14}},
         h('div',null,
           h('div',{style:{fontSize:11,fontWeight:700,color:'rgba(238,242,255,0.4)',letterSpacing:'0.08em',textTransform:'uppercase',marginBottom:3}},'Balance pendiente'),
-          h('div',{style:{fontSize:36,fontWeight:800,color:iOwe?'#FF6B6B':'#3DD68C',letterSpacing:'-0.02em',lineHeight:1}},fmt(balAmt)),
+          h('div',{style:{fontSize:36,fontWeight:800,color:iOwe?'#FF6B6B':'#3DD68C',letterSpacing:'-0.02em',lineHeight:1}},fmt2(balAmt)),
           h('div',{style:{fontSize:13,color:'rgba(238,242,255,0.5)',marginTop:6}},iOwe?'Le debes a '+PARTNER.name:PARTNER.name+' te debe')
         ),
         h('div',{style:{display:'flex'}},
@@ -2809,45 +3035,54 @@ function SharedTab(){
         )
       ),
       h('div',{style:{display:'flex',gap:8}},
-        h('button',{onClick:function(){setShowReimb(!showReimb);},style:{flex:1,background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:11,color:'#EEF2FF',fontSize:13,fontWeight:600,padding:'9px 0',cursor:'pointer'}},showReimb?'Cancelar':'💸 Reembolso'),
-        balAmt>0&&!showReimb?h('button',{onClick:function(){setReimbAmt(String(Math.round(balAmt*100)/100));setShowReimb(true);},style:{background:iOwe?'rgba(255,107,107,0.18)':'rgba(61,214,140,0.18)',border:'1px solid '+(iOwe?'rgba(255,107,107,0.3)':'rgba(61,214,140,0.3)'),borderRadius:11,color:iOwe?'#FF6B6B':'#3DD68C',fontSize:13,fontWeight:700,padding:'9px 14px',cursor:'pointer',whiteSpace:'nowrap'}},'\u2713 Saldar'):null
+        h('button',{onClick:function(){
+            if(showReimb){setShowReimb(false);}
+            else{setReimbDir(iOwe);if(balAmt>0){setReimbAmt(String(Math.round(balAmt*100)/100));}else{setReimbAmt('');}setShowReimb(true);}
+          },style:{flex:1,background:showReimb?'rgba(255,255,255,0.07)':(balAmt>0?(iOwe?'rgba(255,107,107,0.18)':'rgba(61,214,140,0.18)'):'rgba(255,255,255,0.07)'),border:'1px solid '+(showReimb?'rgba(255,255,255,0.1)':(balAmt>0?(iOwe?'rgba(255,107,107,0.3)':'rgba(61,214,140,0.3)'):'rgba(255,255,255,0.1)')),borderRadius:11,color:showReimb?'#EEF2FF':(balAmt>0?(iOwe?'#FF6B6B':'#3DD68C'):'#EEF2FF'),fontSize:13,fontWeight:700,padding:'9px 0',cursor:'pointer'}},showReimb?'Cancelar':(balAmt>0?'✓ Saldar':'💸 Reembolso'))
       ),
       showReimb?h('div',{style:{marginTop:12,paddingTop:12,borderTop:'1px solid rgba(255,255,255,0.07)'}},
-        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        h('div',{style:{display:'flex',gap:6,marginBottom:10}},
+          h('button',{onClick:function(){setReimbDir(true);},style:{flex:1,background:reimbDir?'rgba(255,107,107,0.15)':'rgba(255,255,255,0.05)',border:'1px solid '+(reimbDir?'rgba(255,107,107,0.3)':'rgba(255,255,255,0.1)'),borderRadius:9,color:reimbDir?'#FF6B6B':'rgba(238,242,255,0.4)',fontSize:12,fontWeight:600,padding:'7px 0',cursor:'pointer'}},ME_USER.name+' → '+PARTNER.name),
+          h('button',{onClick:function(){setReimbDir(false);},style:{flex:1,background:!reimbDir?'rgba(61,214,140,0.15)':'rgba(255,255,255,0.05)',border:'1px solid '+(!reimbDir?'rgba(61,214,140,0.3)':'rgba(255,255,255,0.1)'),borderRadius:9,color:!reimbDir?'#3DD68C':'rgba(238,242,255,0.4)',fontSize:12,fontWeight:600,padding:'7px 0',cursor:'pointer'}},PARTNER.name+' → '+ME_USER.name)
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}},
           h('div',null,
             h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.4)',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:5}},'Importe'),
-            h('div',{style:{display:'flex',alignItems:'center',background:'rgba(255,255,255,0.07)',borderRadius:10,padding:'8px 12px',border:'1px solid rgba(255,255,255,0.1)'}},
-              h('span',{style:{fontSize:12,color:'rgba(238,242,255,0.4)',marginRight:4}},'\u20ac'),
-              h('input',{type:'number',value:reimbAmt,onChange:function(e){setReimbAmt(e.target.value);},style:{background:'none',border:'none',color:'#EEF2FF',fontSize:14,fontWeight:700,width:'100%',outline:'none'}})
+            h('div',{style:{display:'flex',alignItems:'center',background:'rgba(255,255,255,0.07)',borderRadius:10,padding:'8px 10px',border:'1px solid rgba(255,255,255,0.1)'}},
+              h('span',{style:{fontSize:12,color:'rgba(238,242,255,0.4)',marginRight:3}},'€'),
+              h('input',{type:'number',value:reimbAmt,onChange:function(e){setReimbAmt(e.target.value);},style:{background:'none',border:'none',color:'#EEF2FF',fontSize:13,fontWeight:700,width:'100%',outline:'none',minWidth:0}})
             )
           ),
           h('div',null,
-            h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.4)',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:5}},'Nota'),
-            h('input',{type:'text',placeholder:'Cuadre...',value:reimbNote,onChange:function(e){setReimbNote(e.target.value);},style:{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#EEF2FF',fontSize:13,padding:'8px 12px',outline:'none',width:'100%'}})
+            h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.4)',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:5}},'Fecha'),
+            h('input',{type:'date',value:reimbDate,onChange:function(e){setReimbDate(e.target.value);},style:{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#EEF2FF',fontSize:12,padding:'8px 10px',outline:'none',width:'100%',minWidth:0,boxSizing:'border-box'}})
           )
+        ),
+        h('div',{style:{marginBottom:10}},
+          h('div',{style:{fontSize:10,color:'rgba(238,242,255,0.4)',fontWeight:700,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:5}},'Nota'),
+          h('input',{type:'text',placeholder:'Concepto...',value:reimbNote,onChange:function(e){setReimbNote(e.target.value);},style:{background:'rgba(255,255,255,0.07)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:10,color:'#EEF2FF',fontSize:12,padding:'8px 10px',outline:'none',width:'100%',boxSizing:'border-box'}})
         ),
         h('button',{onClick:handleReimb,style:{background:'linear-gradient(135deg,rgba(61,214,140,0.7),rgba(79,172,254,0.7))',border:'none',borderRadius:12,color:'#070D1A',fontSize:14,fontWeight:800,padding:'11px 0',cursor:'pointer',width:'100%'}},'Confirmar reembolso')
       ):null
     ),
 
-    // Indicador gasto conjunto acumulado
-    h('div',{style:{background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:16,padding:'12px 16px',marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center'}},
-      h('div',null,
-        h('div',{style:{fontSize:10,fontWeight:700,color:'rgba(238,242,255,0.4)',textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:3}},'Gasto conjunto acumulado'),
-        h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.3)'}},('Desde ene 2025'))
+    // Indicador gasto conjunto acumulado + gasto del mes seleccionado
+    h('div',{style:{display:'flex',gap:8,marginBottom:10}},
+      h('div',{style:{flex:1,background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:16,padding:'12px 14px'}},
+        h('div',{style:{fontSize:10,fontWeight:700,color:'rgba(238,242,255,0.4)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}},'Acumulado'),
+        h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.3)',marginBottom:6}},'Desde ene 2025'),
+        h('div',{style:{fontSize:19,fontWeight:800,color:'#EEF2FF'}},
+          fmt(6946.40 + allExp.reduce(function(s,e){return s+e.amount;},0))
+        )
       ),
-      h('div',{style:{fontSize:22,fontWeight:800,color:'#EEF2FF'}},
-        fmt(6946.40 + allExp.reduce(function(s,e){return s+e.amount;},0))
+      h('div',{style:{flex:1,background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:16,padding:'12px 14px'}},
+        h('div',{style:{fontSize:10,fontWeight:700,color:'rgba(238,242,255,0.4)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:3}},'Gasto del mes'),
+        h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.3)',marginBottom:6,textTransform:'capitalize'}},monthLabelLong),
+        h('div',{style:{fontSize:19,fontWeight:800,color:'#EEF2FF'}},
+          fmt(displayExp.reduce(function(s,e){return s+e.amount;},0))
+        )
       )
     ),
-    h('div',{style:{display:'flex',gap:6,marginBottom:10,background:'rgba(255,255,255,0.03)',borderRadius:10,padding:3}},
-      [{k:'total',l:'Total compartido'},{k:'mine',l:'Mi parte'}].map(function(v){
-        var active=view===v.k;
-        return h('button',{key:v.k,onClick:function(){setView(v.k);},
-          style:{flex:1,background:active?'rgba(192,132,252,0.14)':'none',border:active?'1px solid rgba(192,132,252,0.28)':'1px solid transparent',borderRadius:8,color:active?PC:'rgba(238,242,255,0.4)',fontSize:13,fontWeight:active?700:500,padding:'7px 0',cursor:'pointer'}},v.l);
-      })
-    ),
-
     // Month selector
     h('div',{style:{overflowX:'auto',marginBottom:10}},
       h('div',{style:{display:'flex',gap:7,paddingBottom:2}},
@@ -2860,60 +3095,88 @@ function SharedTab(){
       )
     ),
 
-    // Evolución mes a mes
+    // Evolución mes a mes / intramensual
     h('div',{style:CARD},
-      h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF',marginBottom:4}},'Evolución mensual'),
+      h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF',marginBottom:4}},
+        lineMetric==='intra'?('Evolución intramensual — '+monthLabelLong):'Evolución mensual'
+      ),
       h('div',{style:{display:'flex',gap:6,marginBottom:14,marginTop:8,background:'rgba(255,255,255,0.04)',borderRadius:10,padding:3}},
-        [{k:'total',l:'Total'},{k:'mine',l:'Mi parte'},{k:'byPayer',l:'Por pagador'}].map(function(opt){
+        [{k:'intra',l:'Intramensual'},{k:'total',l:'Total'},{k:'mine',l:'Mi parte'},{k:'byPayer',l:'Por pagador'}].map(function(opt){
           var active=lineMetric===opt.k;
           return h('button',{key:opt.k,onClick:function(){setLineMetric(opt.k);},
-            style:{flex:1,background:active?'rgba(192,132,252,0.16)':'none',border:active?'1px solid rgba(192,132,252,0.3)':'1px solid transparent',borderRadius:7,color:active?PC:'rgba(238,242,255,0.4)',fontSize:11,fontWeight:active?700:500,padding:'6px 0',cursor:'pointer'}},opt.l);
+            style:{flex:1,background:active?'rgba(192,132,252,0.16)':'none',border:active?'1px solid rgba(192,132,252,0.3)':'1px solid transparent',borderRadius:7,color:active?PC:'rgba(238,242,255,0.4)',fontSize:10,fontWeight:active?700:500,padding:'6px 0',cursor:'pointer'}},opt.l);
         })
       ),
-      evoMonths.length===0?h('div',{style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'20px 0'}},'Sin datos todavía'):
+      (lineMetric==='intra'?intraSeries.data.length===0:evoMonths.length===0)?h('div',{style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'20px 0'}},'Sin datos todavía'):
         h(MultiLineChart,{series:lineSeries,labels:evoLabels,height:190})
     ),
 
     // Resumen por categoría del mes seleccionado
     h('div',{style:CARD},
       h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF',marginBottom:12}},
-        (view==='total'?'Total compartido':'Mi parte')+' \u2014 '+new Date(selMonth+'-01').toLocaleDateString('es-ES',{month:'long',year:'numeric'})
+        'Por categor\u00eda \u2014 '+new Date(selMonth+'-01').toLocaleDateString('es-ES',{month:'long',year:'numeric'})
       ),
       catEntries.length===0?h('div',{style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'12px 0'}},'Sin gastos este mes'):null,
       catEntries.map(function(entry,idx){
         var cat=entry[0],d=entry[1];
         var color=SHARED_CAT_COLORS[idx%SHARED_CAT_COLORS.length];
         return h('div',{key:cat,style:{padding:'10px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
-          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
             h('div',{style:{display:'flex',alignItems:'center',gap:6}},
               h('div',{style:{width:8,height:8,borderRadius:'50%',background:color,flexShrink:0}}),
               h('span',{style:{fontSize:13,fontWeight:600,color:'#EEF2FF'}},cat)
             ),
             h('span',{style:{fontSize:13,fontWeight:800,color:'#EEF2FF'}},fmt(d.total))
           ),
-          view==='total'?
-            h('div',{style:{display:'flex',gap:6}},
-              h('div',{style:{flex:1,background:'rgba(61,214,140,0.07)',border:'1px solid rgba(61,214,140,0.14)',borderRadius:8,padding:'5px 8px'}},
-                h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},ME_USER.name),
-                h('div',{style:{fontSize:12,fontWeight:700,color:'#3DD68C'}},fmt(d.myShare))
-              ),
-              h('div',{style:{flex:1,background:'rgba(192,132,252,0.07)',border:'1px solid rgba(192,132,252,0.14)',borderRadius:8,padding:'5px 8px'}},
-                h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},PARTNER.name),
-                h('div',{style:{fontSize:12,fontWeight:700,color:PC}},fmt(d.otherShare))
-              )
-            ):
-            h('div',{style:{display:'flex',gap:6}},
-              h('div',{style:{flex:1,background:'rgba(61,214,140,0.07)',border:'1px solid rgba(61,214,140,0.14)',borderRadius:8,padding:'5px 8px'}},
-                h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},'Mi parte'),
-                h('div',{style:{fontSize:12,fontWeight:700,color:'#3DD68C'}},fmt(d.myShare))
-              ),
-              h('div',{style:{flex:1,background:'rgba(192,132,252,0.07)',border:'1px solid rgba(192,132,252,0.14)',borderRadius:8,padding:'5px 8px'}},
-                h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},'Parte '+PARTNER.name),
-                h('div',{style:{fontSize:12,fontWeight:700,color:PC}},fmt(d.otherShare))
-              )
+          h('div',{style:{fontSize:9,fontWeight:700,color:'rgba(238,242,255,0.32)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}},'Pagado'),
+          h('div',{style:{display:'flex',gap:6,marginBottom:8}},
+            h('div',{style:{flex:1,background:'rgba(61,214,140,0.07)',border:'1px solid rgba(61,214,140,0.14)',borderRadius:8,padding:'5px 8px'}},
+              h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},ME_USER.name),
+              h('div',{style:{fontSize:12,fontWeight:700,color:'#3DD68C'}},fmt(d.paidMe))
+            ),
+            h('div',{style:{flex:1,background:'rgba(192,132,252,0.07)',border:'1px solid rgba(192,132,252,0.14)',borderRadius:8,padding:'5px 8px'}},
+              h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},PARTNER.name),
+              h('div',{style:{fontSize:12,fontWeight:700,color:PC}},fmt(d.paidOther))
             )
+          ),
+          h('div',{style:{fontSize:9,fontWeight:700,color:'rgba(238,242,255,0.32)',textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}},'Reparto'),
+          h('div',{style:{display:'flex',gap:6}},
+            h('div',{style:{flex:1,background:'rgba(61,214,140,0.07)',border:'1px solid rgba(61,214,140,0.14)',borderRadius:8,padding:'5px 8px'}},
+              h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},ME_USER.name),
+              h('div',{style:{fontSize:12,fontWeight:700,color:'#3DD68C'}},fmt(d.splitMe))
+            ),
+            h('div',{style:{flex:1,background:'rgba(192,132,252,0.07)',border:'1px solid rgba(192,132,252,0.14)',borderRadius:8,padding:'5px 8px'}},
+              h('div',{style:{fontSize:9,color:'rgba(238,242,255,0.4)',marginBottom:2}},PARTNER.name),
+              h('div',{style:{fontSize:12,fontWeight:700,color:PC}},fmt(d.splitOther))
+            )
+          )
         );
       })
+    ),
+
+    // Asignaci\u00f3n de PARTNER: por categor\u00eda, la parte de lo que pag\u00f3 ella que es de ME.
+    // Solo informativo/verificaci\u00f3n \u2014 ya est\u00e1 incluido en el balance (calcBalance ya
+    // resta la parte de ME de lo que paga PARTNER), no crea ning\u00fan reembolso nuevo.
+    h('div',{style:CARD},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:showAssign?12:0}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+          h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF'}},'Asignaci\u00f3n de '+PARTNER.name),
+          h('button',{onClick:function(){setShowAssign(!showAssign);},style:{background:'none',border:'none',color:'rgba(238,242,255,0.4)',fontSize:12,cursor:'pointer',padding:'2px 4px'}},showAssign?'\u25be':'\u25b8')
+        ),
+        null
+      ),
+      showAssign?[
+        h('div',{key:'sub',style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginBottom:10}},'De lo que ha pagado '+PARTNER.name+', la parte que es tuya'),
+        catEntries.filter(function(e){return e[1].iOweOther>0;}).length===0
+          ?h('div',{key:'empty',style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'12px 0'}},'Nada que asignar este mes')
+          :catEntries.filter(function(e){return e[1].iOweOther>0;}).map(function(entry){
+            var cat=entry[0],d=entry[1];
+            return h('div',{key:cat,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
+              h('div',{style:{fontSize:13,color:'rgba(238,242,255,0.7)'}},cat),
+              h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF'}},fmt(d.iOweOther))
+            );
+          })
+      ]:null
     ),
 
     // Expense list
@@ -2923,14 +3186,11 @@ function SharedTab(){
           h('div',{style:{fontSize:13,fontWeight:700,color:'#EEF2FF'}},'Gastos del mes'),
           h('button',{onClick:function(){setExpCollapsed(!expCollapsed);},style:{background:'none',border:'none',color:'rgba(238,242,255,0.4)',fontSize:12,cursor:'pointer',padding:'2px 4px'}},expCollapsed?'▸':'▾')
         ),
-        view==='historial'?h('button',{onClick:function(){
-            dispatch({type:'SETTLE_MONTH',month:selMonth});
-            sbShared.from('reimbursements').update({settled:true}).eq('month',selMonth).then(function(r){if(r.error)logErr('settle month reimb err: '+r.error.message);});
-          },style:{background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:8,color:'rgba(238,242,255,0.55)',fontSize:11,fontWeight:600,padding:'5px 10px',cursor:'pointer'}},'Saldar reembolsos del mes'):null
+        null
       ),
       !expCollapsed?[
-      displayExp.length===0?h('div',{key:'empty',style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'20px 0'}},'Sin gastos'):null,
-      displayExp.sort(function(a,b){return b.month.localeCompare(a.month);}).map(function(expense){
+      displayExp.length===0&&monthReimbs.length===0?h('div',{key:'empty',style:{color:'rgba(238,242,255,0.3)',fontSize:13,textAlign:'center',padding:'20px 0'}},'Sin gastos'):null,
+      displayExp.sort(function(a,b){return (b.date||b.month+'-01').localeCompare(a.date||a.month+'-01');}).map(function(expense){
         var sh=calcShares(expense);var myShare=sh[ME];
         var iPaid=expense.paidBy===ME;
         var otherShare=iPaid?sh.ella:sh.pablo;
@@ -2944,7 +3204,7 @@ function SharedTab(){
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
               h('div',{style:{minWidth:0}},
                 h('div',{style:{fontSize:13,fontWeight:600,color:'#EEF2FF',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},expense.description),
-                h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:2}},expense.category+' · '+expense.month)
+                h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:2}},expense.category+' · '+new Date(expense.date+'T00:00:00').toLocaleDateString('es-ES',{day:'2-digit',month:'short',year:'numeric'}))
               ),
               h('div',{style:{textAlign:'right',flexShrink:0,marginLeft:8}},
                 h('div',{style:{fontSize:14,fontWeight:700,color:'#EEF2FF'}},fmt(expense.amount)),
@@ -2958,18 +3218,49 @@ function SharedTab(){
               h('div',{style:{background:'rgba(255,255,255,0.05)',borderRadius:5,padding:'2px 6px',fontSize:10,color:'rgba(238,242,255,0.4)'}},
                 meUser.name+' '+fmt(sh[ME])+' / '+otherUser.name+' '+fmt(sh[OTHER_USER])
               ),
+              h('button',{onClick:function(){setEditExpense(expense);},
+                style:{marginLeft:'auto',background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 6px',cursor:'pointer'}},'✎'),
               h('button',{onClick:function(){
                 if(!window.confirm('¿Borrar este gasto?'))return;
                 dispatch({type:'DELETE_SHARED_EXPENSE',id:expense.id});
                 sbShared.from('shared_expenses').delete().eq('id',expense.id).then(function(r){if(r.error)logErr('delete shared_expense err: '+r.error.message);});
-              },style:{marginLeft:'auto',background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 6px',cursor:'pointer'}},'✕')
+              },style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 6px',cursor:'pointer'}},'✕')
             )
           )
         );
-      })]:null
+      }),
+      monthReimbs.sort(function(a,b){return(b.date||'').localeCompare(a.date||'');}).map(function(r){
+        var fromUser=SHARED_USERS[r.from],toUser=SHARED_USERS[r.to];
+        return h('div',{key:r.id,style:{display:'flex',gap:10,padding:'11px 0',borderBottom:'1px solid rgba(255,255,255,0.05)'}},
+          h('div',{style:{width:40,height:40,borderRadius:11,background:'#4FACFE20',display:'flex',alignItems:'center',justifyContent:'center',fontSize:19,flexShrink:0}},'💸'),
+          h('div',{style:{flex:1,minWidth:0}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+              h('div',{style:{minWidth:0}},
+                h('div',{style:{fontSize:13,fontWeight:600,color:'#EEF2FF',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},r.note||'Reembolso'),
+                h('div',{style:{fontSize:11,color:'rgba(238,242,255,0.4)',marginTop:2}},'Reembolso · '+r.date)
+              ),
+              h('div',{style:{textAlign:'right',flexShrink:0,marginLeft:8}},
+                h('div',{style:{fontSize:14,fontWeight:700,color:'#4FACFE'}},fmt(r.amount))
+              )
+            ),
+            h('div',{style:{display:'flex',alignItems:'center',gap:5,marginTop:5}},
+              h('div',{style:{background:'#4FACFE18',borderRadius:5,padding:'2px 6px',fontSize:10,color:'#4FACFE',fontWeight:600}},fromUser.name+' → '+toUser.name),
+              h('button',{onClick:function(){setEditReimb(r);},
+                style:{marginLeft:'auto',background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 6px',cursor:'pointer'}},'✎'),
+              h('button',{onClick:function(){
+                if(!window.confirm('¿Borrar este reembolso?'))return;
+                dispatch({type:'DELETE_REIMBURSEMENT',id:r.id});
+                sbShared.from('reimbursements').delete().eq('id',r.id).then(function(res){if(res.error)logErr('delete reimbursement err: '+res.error.message);});
+              },style:{background:'none',border:'none',color:'rgba(238,242,255,0.25)',fontSize:12,padding:'2px 6px',cursor:'pointer'}},'✕')
+            )
+          )
+        );
+      })
+      ]:null
     ),
 
-    showAdd?h(SharedAddForm,{onClose:function(){setShowAdd(false);},cats:cats}):null,
+    (showAdd||editExpense)?h(SharedAddForm,{onClose:function(){setShowAdd(false);setEditExpense(null);},cats:cats,editExpense:editExpense}):null,
+    editReimb?h(ReimbEditForm,{reimb:editReimb,onClose:function(){setEditReimb(null);}}):null,
     h('div',{style:{height:16}})
   );
 }
@@ -3128,13 +3419,16 @@ function mapSharedExpenseRow(r) {
   return {id:r.id,paidBy:paidBy,category:r.category,description:r.description,
     amount:parseFloat(r.total_amount)||0,
     myShareAmount:parseFloat(r.my_share_amount)||0,
+    paidByMe:parseFloat(r.paid_by_me)||0,
     mySharePct:r.my_share_pct!=null?parseFloat(r.my_share_pct):null,
-    splitType:r.split_type,month:r.month};
+    splitType:r.split_type,month:r.month,date:r.date||(r.month+'-01')};
 }
 function mapReimbursementRow(r) {
+  // from/to se guardan ya como 'pablo'/'ella' absolutos (ver handleReimb) — sin
+  // transformar, a diferencia de paid_by en shared_expenses que sí es relativo a 'me'.
   return {id:r.id,
-    from:r.from==='me'?'pablo':'ella',
-    to:r.to==='me'?'pablo':'ella',
+    from:r.from,
+    to:r.to,
     amount:parseFloat(r.amount)||0,date:r.date,note:r.note||'',month:r.month,settled:!!r.settled};
 }
 // Recarga shared_expenses + reimbursements desde sbShared. onDone(ok:boolean) opcional.
